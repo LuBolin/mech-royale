@@ -40,6 +40,7 @@
   footer { display:flex; gap:10px; align-items:center; padding:8px 16px; border-top:1px solid var(--line); height:46px; }
   footer button, footer select { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer; }
   footer input[type=range] { flex:1; }
+
   #charts { display:none; padding:16px; overflow:auto; height:calc(100vh - 92px); }
   .chart { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:14px; }
   .chart h3 { margin:0 0 6px; font-size:13px; }
@@ -58,6 +59,7 @@
     <button role="tab" aria-selected="false" id="tabCharts">Training scores</button>
   </span>
 </header>
+
 <main id="replay">
   <div id="mapwrap">
     <canvas id="map" aria-label="Top-down match replay"></canvas>
@@ -104,6 +106,7 @@
   <span id="opt2d"><label><input type="checkbox" id="follow"> Follow selected</label>
   <label><input type="checkbox" id="trails" checked> Trails</label></span>
 </footer>
+
 <section id="charts">
   <p class="note">Each generation scores 16 candidates. <b>Fitness</b> = 0.5 × FFA points + 0.5 × practice points (0–15). The <b>benchmark</b> plays the distribution mean on fixed seeds: 32 practice matches vs house bots, and 16 FFA matches vs 15 default bots. It's the number to compare across runs. Simulated scores; the real server's house bots differ.</p>
   <div id="chartList"></div>
@@ -111,6 +114,7 @@
 <script>/*THREE*/</script>
 <script>
 const D = /*DATA*/null;
+if (!D) location.replace("../runs/combat-gallery/index.html");
 const $ = id => document.getElementById(id);
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const COL = { ours: css('--ours'), easy: css('--easy'), medium: css('--medium'), hard: css('--hard'), expert: css('--expert'), rival: css('--rival') };
@@ -427,7 +431,15 @@ function tick(ts) {
   if (mode3d && T) render3d(dt);
   requestAnimationFrame(tick);
 }
-function toggle(p) { playing = p ?? !playing; acc = 0; $('play').textContent = playing ? 'Pause' : 'Play'; }
+function toggle(p) {
+  playing = p ?? !playing;
+  acc = 0;
+  if (playing && fi === F.length - 1) { fi = 0; draw(); }
+  $('play').textContent = playing ? 'Pause' : 'Play';
+}
+window.addEventListener('message', e => {
+  if (window.parent !== window && e.source === window.parent && e.data === 'toggle-replay') toggle();
+});
 function step(n) { toggle(false); fi = clamp(fi + n, 0, F.length - 1); draw(); }
 $('play').onclick = () => toggle();
 $('prev').onclick = () => step(-1);
@@ -466,7 +478,7 @@ window.onmousemove = e => {
 };
 window.addEventListener('keydown', e => {
   keys.add(e.code);
-  if (e.code === 'Space') { e.preventDefault(); toggle(); }
+  if (e.code === 'Space') { e.preventDefault(); if (!e.repeat) toggle(); }
   if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') { e.preventDefault(); step((e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 10 : 1)); }
   if (e.code === 'BracketLeft' || e.code === 'BracketRight') {  // previous / next living mech
     const d = e.code === 'BracketLeft' ? 15 : 1;
