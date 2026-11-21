@@ -13,6 +13,6 @@
   "gun_slew_s": 0.025,
   "hpd_keep_margin": 0.10,
   "finish_drop": 1,
-  "score_moves": 1,
+  "score_moves": 0,
   "ffa_detect": 1
 }
