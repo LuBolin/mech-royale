@@ -1,0 +1,7 @@
+kit/
+runs/
+__pycache__/
+*.pyc
+*.log
+Builders - Mech Royale*
+.claude/

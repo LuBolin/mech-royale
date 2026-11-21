@@ -1,0 +1,115 @@
+Strategy focus points
+Twelve behaviours, ordered roughly by impact on placement. Each lists what the bot reads, what it sends, and the knobs a tuner could evolve.
+#
+Focus point
+Reads (obs)
+Sends (action)
+Tunable knobs
+F1
+Survival first. Fight only when cheap or forced
+self.hp, mechs[] (hp, weapons, pos), alive, events.damaged
+move, aim, fire
+engage / flee HP fraction, max enemies to engage, engage range per weapon, aggression vs alive
+F2
+Aim and weapon use. Lead gun shots; time laser release; lightning by cone.
+Whether or not to shoot is a separate problem. Shooting each weapon and having them hit, however, should be solved.
+target pos/vel, self.aim, self.weapons[i].*
+aim with lead, fire only when actual aim error is small, reload
+fire-below-aim-error, laser release charge, burst length, lead gain
+F3
+Zone rotation. Arrive early inside the next circle, never fight at the edge
+zone.*, t
+move along zone flow field, boost when late
+arrive margin (s), preferred depth in circle, boost-when-ETA threshold
+F4
+Face the threat. Rear hits ×1.5; retreat while aiming back
+events.damaged.bearing / .rear, tracked enemies
+aim[0] = threat bearing while move points away
+threat weighting, snap speed to new attacker
+F5
+3D movement. Jump + jet onto roofs for vision and cover
+self.pos/vel/energy/grounded
+move, jump, boost
+energy reserve kept for escape, roof preference, sprint usage
+F6
+Loot and loadout. We can experiment with which is the best loadout. A hypothesis is laser + lightning; 
+pickups[], crates[], self.weapons
+take (+ drop to swap), fire on crates
+weapon ranking, max loot detour by phase, break crates yes/no (makes noise)
+F7
+Dodging. Bullets/shells are visible; laser charge is visible with its aim
+projectiles[], mechs[].charging/aim, sounds (laser_charge)
+move perpendicular, jump/boost, step behind cover
+dodge trigger time-to-impact, strafe pattern
+F8
+Information. Scan with the vision wedge; use sounds; stay silent
+mechs[], sounds[], beams[]
+aim sweeps when idle; move length < ~0.42 to stay silent (< 5 m/s)
+scan period, sneak vs speed, sound weighting on threat map
+F9
+Supply drops and third-partying. Capture only uncontested; otherwise overwatch and shoot the capturer
+drops[], mechs near ring
+move to ring or overwatch spot
+contest threshold, overwatch distance, HP required
+F10
+Upgrades. Pick within 5 s. perhaps we can keep data on this to find out which set of upgrades appear to be the most useful.
+offer.choices[].id
+pick: i
+priority list (survival candidates: nanites, armor, plating, sensors, jets, capacitor)
+F11
+NPCs and cubes. Drones give 2 cubes but shoot back; cubes grow you 5% each
+mechs[] kind npc, cubes[]
+aim/fire at drones when safe, walk over cubes
+farm drones early yes/no, cube detour distance
+Worth noting:
+• Upgrade nanites (+60% regen, starts 1.5 s sooner) directly powers F2. Strong pick for a survival bot.
+• Laser + lightning is forgiving for a bot with rough aim: one is hitscan, the other auto-targets in a cone.
+• Sounds name the weapon. A lightning sound means keep that mech beyond 45 m; a laser_charge sound means break LOS.
+• Cubes trade size for power. Late game, a 10-cube mech is 50% bigger and easier to hit.
+Navigation with elevation
+Use a multi-layer nav graph, not a flat grid, because mechs can jump, jet onto roofs and walk under bridges. Build it once at docker build time from arena/v2/world.json and terrain.i16.
+Inputs:
+• terrain.i16: little-endian int16 centimetres, 1070 × 724, 1 m step from (terrain.minX, terrain.minY). Sample bilinearly.
+• prisms[]: buildings, stadium, bridges. Each has base, top, a footprint ring and holes. Bridges have base above ground.
+• Ignore blocks, cars, parking, water, barriers: scenery only, they block nothing.
+Graph:
+• Nodes: surface cells at ~2 m on every walkable surface: terrain, each roof (top), each bridge deck. The ground under a bridge is a separate layer from its deck when the gap clears 9 m.
+• Walk edges: neighbours with height difference ≤ 1.2 m, slope ≤ 50°, and 9 m head clearance.
+• Drop edges: step off any edge to a lower surface. Cheap: there is no fall damage in the rules.
+• Climb edges: from a ground cell beside a wall to the roof edge. Cost = time + energy (≈ 1.5 × height + margin). Usable only when current energy covers it; keep a reserve for escapes.
+• Out of reach: roofs above ~60 m (the ~70 m towers) unless capacitor/jets upgrades raise the budget.
+• Mech footprint: inflate walls by the 2.5 m radius (scaled by cubes later) so paths don't scrape corners.
+Precomputed per cell (for strategy): height, roof flag, cover score (how much nearby geometry blocks LOS), exposure (how many directions can see it). These drive hiding spots, regen spots and overwatch spots.
+At runtime:
+• Zone flow field: once per zone phase, compute distance-to-safe-circle over the whole graph (spread across ticks). Each tick, step to the neighbour with the lowest value.
+• Local A*: short searches for loot, cover, drops; budgeted per tick.
+• Physics gotchas: walls slide you along them; you can land on roof edges; eaves stop jets. Expect path-following to need correction from observed pos/vel.
+Architecture and the 50 ms budget
+TypeScript on Bun, hand-written logic in four layers, with all map work done at docker build time. The per-tick cost is parsing plus the reflex layer; everything heavy runs on a slower clock or is precomputed.
+The arrows show data flow inside one decision. Strategy and pathing don't run every tick, so most ticks go straight from world model to reflexes.
+Language: any language works (it's just a Docker image on stdin/stdout). Bun gives JIT speed with typed arrays and the kit's TS wrapper is ready to use. Rust/Go are faster with steadier timing, but need a ~50-line JSON-lines loop written from mechfight.schema.json. Python is too slow for pathfinding on a ~775k-cell map. Parsing is not the bottleneck: observations average ~1.4 KB, max ~7 KB.
+Performance rules:
+• Target ≤ 20 ms per tick, leaving room for pipe latency and the shared CPU.
+• Check the clock inside heavy loops; when out of time, send the reflex action and resume next tick. Never send nothing.
+• Use a 2 m grid (~190k cells) and typed arrays; reuse buffers, avoid allocating objects in hot loops (GC pauses).
+• LOS: test only the few tracked objects per tick; a coarse "which prisms are in this cell" table so each ray tests nearby buildings, not all 259.
+• Build-time output lives in the image, so it doesn't count toward the repo's 20 MB limit.
+Three regimes: training, practice, finals
+The bot faces different opponents in each setting, so what "good" means changes.
+Regime
+Opponents
+What to optimise
+Implications
+Training (local)
+Our own bot and variants
+A tuning signal, not a score
+Needs a local simulator. 16 copies of one bot learn to beat themselves, so use a mixed opponent pool (below).
+Practice (48 matches per submission)
+Built-in bots, which reportedly cooperate
+Surviving a coordinated group
+Don't be the nearest or most visible target. Never fight 2+. Break LOS early and let them fight others. Learn their behaviour from replays.
+Finals
+Other teams' bots
+Mean placement
+Survive by strategy first (hiding, loot, third-partying, zone position). Win duels when forced (aim, movement, positioning).
+It's still unconfirmed how the practice bots cooperate (shared targeting? no friendly fire?). Check replays before building around it.

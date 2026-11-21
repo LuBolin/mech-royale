@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Training Live</title>
+<!-- Live training dashboard. Serve the runs/ folder (python -m http.server --directory runs) and open live.html.
+     It polls each runs/<name>/log.jsonl and args.json every 10 s. Copy of sim/live.html. -->
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#2a313c; --text:#d7dde5; --dim:#8a94a3; --good:#5fbf6a; --warn:#ffb13c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.45 system-ui, sans-serif; padding:16px; }
+  h1 { font-size:17px; margin:0 0 4px; }
+  .sub { color:var(--dim); margin-bottom:14px; }
+  table { border-collapse:collapse; width:100%; margin-bottom:16px; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--dim); font-weight:500; font-size:12px; }
+  td.num { font-variant-numeric:tabular-nums; }
+  .pill { padding:1px 8px; border-radius:10px; font-size:12px; }
+  .run { background:#1f3b26; color:var(--good); } .done { background:#2a313c; color:var(--dim); } .wait { background:#3b321f; color:var(--warn); }
+  .bar { height:6px; background:#2a313c; border-radius:3px; overflow:hidden; width:140px; display:inline-block; vertical-align:middle; margin-right:6px; }
+  .bar > i { display:block; height:100%; background:var(--good); }
+  .chart { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:14px; }
+  .chart h3 { margin:0 0 6px; font-size:13px; }
+  .chart canvas { width:100%; height:240px; display:block; }
+  a { color:#7fb8ff; }
+  .now { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-bottom:12px; }
+  .now-stage { color:var(--dim); font-size:13px; }
+  .now-gen { font-size:28px; font-weight:650; font-variant-numeric:tabular-nums; margin:2px 0 8px; }
+  .now-overall { color:var(--dim); font-variant-numeric:tabular-nums; }
+  .bar.wide { width:min(420px, 60vw); height:8px; }
+  .explain { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 14px; margin-bottom:12px; max-width:980px; }
+  .explain summary { cursor:pointer; color:var(--text); font-weight:600; }
+  .explain p { margin:6px 0; color:var(--dim); }
+  .explain b { color:var(--text); }
+  .tablewrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<h1>Evolution, live</h1>
+<div class="sub" id="sub">Loading…</div>
+<div class="now">
+  <div class="now-stage" id="nowStage">—</div>
+  <div class="now-gen" id="nowGen">—</div>
+  <div class="now-overall"><span class="bar wide"><i id="allBar"></i></span><span id="allText"></span></div>
+</div>
+<details class="explain" open>
+  <summary>What the four stages are</summary>
+  <p>Training runs four evolution runs back to back. One <b>generation</b> = 16 candidate bots, each scored in about 10 simulated matches; the best ones steer the next generation.</p>
+  <p><b>Stages 1–3, step-size tests A/B/C</b> (40 generations each). σ ("sigma") is how far new candidates stray from the current best guess: A = 0.1 (small, careful steps), B = 0.2 (medium), C = 0.35 (large, bold steps). Each test is short; we keep the σ whose final benchmark is highest.</p>
+  <p><b>Stage 4, main run</b> (2000 generations) uses that winning σ. It saves its best bot every 25 generations, so a usable bot exists long before it finishes.</p>
+</details>
+<div class="tablewrap"><table id="tbl"><thead><tr><th>Stage</th><th>Status</th><th>Generation</th><th>σ now</th><th>Sec / gen</th><th>Time left</th><th>Fitness (mean)</th><th>Benchmark: practice</th><th>Benchmark: FFA</th></tr></thead><tbody></tbody></table></div>
+<div id="charts"></div>
+<p class="sub"><b>Fitness</b> = 0.5 × FFA points + 0.5 × practice points (0–15) for each generation's 16 candidates. The <b>benchmark</b> plays the distribution mean on fixed seeds: 32 practice matches vs house bots, and 16 FFA matches vs 15 default bots. It's the number to compare across runs. Watch matches in the <a href="viewer.html">replay viewer</a> (regenerate it with <code>sim\viewer.py</code>). Simulated scores only.</p>
+<script>
+const ORDER = ['sweep_s0.1', 'sweep_s0.2', 'sweep_s0.35', 'main'];
+const NAMES = { 'sweep_s0.1': 'Step-size test A (σ 0.1, small steps)', 'sweep_s0.2': 'Step-size test B (σ 0.2, medium steps)',
+                'sweep_s0.35': 'Step-size test C (σ 0.35, large steps)', 'main': 'Main run (winning σ)' };
+const STAGE = { 'sweep_s0.1': 1, 'sweep_s0.2': 2, 'sweep_s0.35': 3, 'main': 4 };
+const label = n => NAMES[n] || n;
+const pal = { mean: '#4aa3ff', best: '#ffd23f', prac: '#5fbf6a', bprac: '#ff5a5a', bffa: '#b48cff' };
+const fmtT = s => s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+async function getText(u) { try { const r = await fetch(u + '?t=' + Date.now()); return r.ok ? r.text() : null; } catch { return null; } }
+async function load() {
+  const listing = await getText('./') || '';
+  const found = [...listing.matchAll(/href="([^"?/]+)\/"/g)].map(m => decodeURIComponent(m[1]));
+  const names = [...new Set([...ORDER, ...found])];
+  const runs = [];
+  for (const n of names) {
+    const [log, args] = await Promise.all([getText(`${n}/log.jsonl`), getText(`${n}/args.json`)]);
+    const rows = log ? log.trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+    runs.push({ name: n, rows, args: args ? JSON.parse(args) : null });
+  }
+  return runs;
+}
+function lineChart(el, series) {
+  const c = document.createElement('canvas'); el.appendChild(c);
+  const r = c.getBoundingClientRect(), dpr = devicePixelRatio || 1; c.width = r.width * dpr; c.height = 240 * dpr;
+  const g = c.getContext('2d'); g.scale(dpr, dpr); const w = r.width, h = 240, L = 40, Bm = 24;
+  const pts = series.flatMap(s => s.pts); if (!pts.length) { g.fillStyle = '#8a94a3'; g.fillText('no data yet', L, 30); return; }
+  const xmax = Math.max(...pts.map(p => p[0]), 1), ymax = Math.max(...pts.map(p => p[1]), 1) * 1.1;
+  const X = x => L + (w - L - 10) * x / xmax, Y = y => h - Bm - (h - Bm - 18) * y / ymax;
+  g.strokeStyle = '#2a313c'; g.fillStyle = '#8a94a3'; g.font = '11px system-ui';
+  for (let k = 0; k <= 4; k++) { const y = ymax * k / 4; g.beginPath(); g.moveTo(L, Y(y)); g.lineTo(w - 10, Y(y)); g.stroke(); g.fillText(y.toFixed(1), 18, Y(y) + 4); }
+  const step = [5, 10, 25, 50, 100, 250, 500].find(s => xmax / s <= 8) || 1000;
+  for (let x = 0; x <= xmax; x += step) { g.fillText(String(x), X(x) - 4, h - 8); }
+  g.fillText('generation →', w - 82, h - 8);
+  g.save(); g.translate(10, h / 2 + 40); g.rotate(-Math.PI / 2); g.fillText('placement points (0–15)', 0, 0); g.restore();
+  let lx = L;
+  for (const s of series) {
+    g.fillStyle = s.color; g.strokeStyle = s.color; g.lineWidth = 1.5;
+    if (s.dots) for (const [x, y] of s.pts) { g.beginPath(); g.arc(X(x), Y(y), 3.5, 0, 7); g.fill(); }
+    else { g.beginPath(); s.pts.forEach(([x, y], i) => i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))); g.stroke(); }
+    g.fillRect(lx, 4, 10, 3); g.fillText(s.name, lx + 14, 10); lx += g.measureText(s.name).width + 30;
+  }
+}
+async function refresh() {
+  const runs = await load();
+  const tb = document.querySelector('#tbl tbody'); tb.innerHTML = '';
+  const charts = document.getElementById('charts'); charts.innerHTML = '';
+  let active = null, totalGens = 0, doneGens = 0, secLeft = 0, lastSpg = 12;
+  for (const r of runs) {
+    const target = r.args ? r.args.gens : (r.name === 'main' ? 2000 : 40);
+    const n = r.rows.filter(x => x.fit_mean !== undefined).length;
+    const rec = r.rows.filter(x => x.sec !== undefined).slice(-10);
+    if (rec.length) lastSpg = rec.reduce((a, x) => a + x.sec, 0) / rec.length;
+    totalGens += target; doneGens += Math.min(n, target); secLeft += Math.max(0, target - n) * lastSpg;
+  }
+  for (const r of runs) {
+    const gens = r.rows.filter(x => x.fit_mean !== undefined), last = gens[gens.length - 1];
+    const target = r.args ? r.args.gens : (r.name === 'main' ? 2000 : 40);
+    const done = gens.length >= target, started = r.rows.length > 0 || r.args !== null;  // args.json is written at launch
+    const status = done ? 'done' : started ? 'run' : 'wait';
+    if (status === 'run') active = { name: r.name, n: gens.length, target };
+    const recent = gens.slice(-10), spg = recent.length ? recent.reduce((a, x) => a + x.sec, 0) / recent.length : null;
+    const benches = r.rows.filter(x => x.bench_prac !== undefined), b = benches[benches.length - 1];
+    const pct = Math.min(100, gens.length / target * 100);
+    tb.insertAdjacentHTML('beforeend', `<tr><td>${STAGE[r.name] ? STAGE[r.name] + '. ' : ''}${label(r.name)}</td><td><span class="pill ${status}">${status === 'run' ? 'running' : status === 'done' ? 'done' : 'waiting'}</span></td>
+      <td class="num"><span class="bar"><i style="width:${pct}%"></i></span>${gens.length} / ${target}</td>
+      <td class="num">${last ? last.sigma.toFixed(3) : (r.args ? r.args.sigma : '—')}</td><td class="num">${spg ? spg.toFixed(1) : '—'}</td>
+      <td class="num">${status === 'run' && spg ? fmtT((target - gens.length) * spg) : '—'}</td>
+      <td class="num">${last ? last.fit_mean.toFixed(2) : '—'}</td>
+      <td class="num">${b ? `${b.bench_prac.toFixed(2)} <span style="color:#8a94a3">(gen ${b.gen})</span>` : '—'}</td>
+      <td class="num">${b ? b.bench_ffa.toFixed(2) : '—'}</td></tr>`);
+    if (!started) continue;
+    const box = document.createElement('div'); box.className = 'chart';
+    box.innerHTML = `<h3>${STAGE[r.name] ? 'Stage ' + STAGE[r.name] + ': ' : ''}${label(r.name)} · generation ${gens.length} of ${target}</h3>`; charts.appendChild(box);
+    lineChart(box, [
+      { name: 'fitness mean', color: pal.mean, pts: gens.map(x => [x.gen, x.fit_mean]) },
+      { name: 'fitness best', color: pal.best, pts: gens.map(x => [x.gen, x.fit_best]) },
+      { name: 'practice pts mean', color: pal.prac, pts: gens.map(x => [x.gen, x.prac_mean]) },
+      { name: 'benchmark practice', color: pal.bprac, dots: true, pts: benches.map(x => [x.gen, x.bench_prac]) },
+      { name: 'benchmark FFA', color: pal.bffa, dots: true, pts: benches.map(x => [x.gen, x.bench_ffa]) },
+    ]);
+  }
+  document.getElementById('sub').textContent = `Refreshed ${new Date().toLocaleTimeString()} · updates every 10 s`;
+  const st = active && STAGE[active.name];
+  document.getElementById('nowStage').textContent = active ? `Now running: stage ${st || '?'} of 4 · ${label(active.name)}` : 'Nothing running right now';
+  document.getElementById('nowGen').textContent = active ? `Generation ${active.n} of ${active.target}` : (doneGens >= totalGens ? 'All stages finished' : '—');
+  document.getElementById('allBar').style.width = `${totalGens ? doneGens / totalGens * 100 : 0}%`;
+  document.getElementById('allText').textContent = ` All stages: ${doneGens} of ${totalGens} generations · about ${fmtT(secLeft)} left`;
+}
+refresh(); setInterval(refresh, 10000);
+</script>
+</body>
+</html>

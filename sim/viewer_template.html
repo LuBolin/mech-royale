@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mech Replay</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#2a313c; --text:#d7dde5; --dim:#8a94a3; --ours:#ffd23f;
+          --easy:#5fbf6a; --medium:#4aa3ff; --hard:#ff9a3c; --expert:#ff5a5a; --rival:#b48cff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:13px/1.4 system-ui, sans-serif; }
+  header { display:flex; gap:16px; align-items:baseline; padding:10px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header .meta { color:var(--dim); }
+  .tabs button { background:none; border:1px solid var(--line); color:var(--text); padding:4px 10px; border-radius:6px; cursor:pointer; }
+  .tabs button[aria-selected=true] { background:var(--panel); border-color:var(--dim); }
+  main { display:grid; grid-template-columns:1fr 290px; gap:0; height:calc(100vh - 92px); }
+  #mapwrap { position:relative; overflow:hidden; }
+  canvas#map { width:100%; height:100%; display:block; cursor:grab; }
+  aside { border-left:1px solid var(--line); padding:12px; overflow:auto; background:var(--panel); }
+  aside h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:14px 0 6px; }
+  .stat { display:flex; justify-content:space-between; padding:2px 0; }
+  .bar { height:6px; background:#2a313c; border-radius:3px; overflow:hidden; margin:2px 0 6px; }
+  .bar > i { display:block; height:100%; background:var(--ours); }
+  #feed div { padding:2px 0; border-bottom:1px solid #20262f; color:var(--dim); }
+  #feed b { color:var(--text); font-weight:600; }
+  .legend span { display:inline-flex; align-items:center; gap:5px; margin:2px 10px 2px 0; }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  footer { display:flex; gap:10px; align-items:center; padding:8px 16px; border-top:1px solid var(--line); height:46px; }
+  footer button, footer select { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:4px 10px; cursor:pointer; }
+  footer input[type=range] { flex:1; }
+  #charts { display:none; padding:16px; overflow:auto; height:calc(100vh - 92px); }
+  .chart { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:14px; }
+  .chart h3 { margin:0 0 6px; font-size:13px; }
+  .chart canvas { width:100%; height:240px; display:block; }
+  .note { color:var(--dim); max-width:900px; }
+  @media (max-width: 800px) { main { grid-template-columns:1fr; height:auto; } #mapwrap { height:60vh; } aside { border-left:0; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Mech Royale replay</h1>
+  <span class="meta" id="meta"></span>
+  <span class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" id="tabReplay">Replay</button>
+    <button role="tab" aria-selected="false" id="tabCharts">Training scores</button>
+  </span>
+</header>
+<main id="replay">
+  <div id="mapwrap"><canvas id="map" aria-label="Top-down match replay"></canvas></div>
+  <aside>
+    <h2>Our bot</h2>
+    <div class="stat"><span>Time</span><b id="time"></b></div>
+    <div class="stat"><span>Mechs alive</span><b id="alive"></b></div>
+    <div class="stat"><span>HP</span><b id="hp"></b></div>
+    <div class="bar"><i id="hpbar"></i></div>
+    <div class="stat"><span>Mode</span><b id="mode"></b></div>
+    <div class="stat"><span>Weapons</span><b id="weap"></b></div>
+    <div class="stat"><span>Cubes</span><b id="cubes"></b></div>
+    <div class="stat"><span>Final place</span><b id="final"></b></div>
+    <h2>Legend</h2>
+    <div class="legend" id="legend"></div>
+    <h2>Deaths</h2>
+    <div id="feed"></div>
+  </aside>
+</main>
+<footer id="controls">
+  <button id="play" aria-label="Play or pause">Play</button>
+  <select id="speed" aria-label="Playback speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="10">10×</option><option value="25">25×</option></select>
+  <input type="range" id="scrub" min="0" value="0" aria-label="Match time">
+  <label><input type="checkbox" id="follow"> Follow our bot</label>
+  <label><input type="checkbox" id="trails" checked> Trails</label>
+</footer>
+<section id="charts">
+  <p class="note">Each generation scores 16 candidates. <b>Fitness</b> = 0.5 × FFA points + 0.5 × practice points (0–15). The <b>benchmark</b> plays the distribution mean on fixed seeds: 32 practice matches vs house bots, and 16 FFA matches vs 15 default bots. It's the number to compare across runs. Simulated scores; the real server's house bots differ.</p>
+  <div id="chartList"></div>
+</section>
+<script>
+const D = /*DATA*/null;
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const COL = { ours: css('--ours'), easy: css('--easy'), medium: css('--medium'), hard: css('--hard'), expert: css('--expert'), rival: css('--rival') };
+const WN = { g: 'gun', m: 'mortar', l: 'laser', t: 'lightning' };
+const name = i => i === D.slot ? 'OURS' : `${D.labels[i]} #${i}`;
+$('meta').textContent = `${D.mode} · seed ${D.seed} · genome ${D.genome} · our place ${D.place} (${D.points} pts)`;
+$('final').textContent = `${D.place} (${D.points} pts)`;
+$('legend').innerHTML = [...new Set(D.labels)].map(l => `<span><i class="dot" style="background:${COL[l]}"></i>${l}</span>`).join('')
+  + '<span><i class="dot" style="background:#e04b4b"></i>zone</span><span><i class="dot" style="background:#c9a227"></i>drop</span><span><i class="dot" style="background:#9aa"></i>drone</span>';
+
+// ---------- map
+const cv = $('map'), ctx = cv.getContext('2d');
+const B = D.map.bounds;
+let view = { s: 1, ox: 0, oy: 0 };
+let staticImg = null;
+function fit() {
+  const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  if (r.width < 2 || r.height < 2) return;  // not laid out yet; onresize calls fit again
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  view.s = Math.min(cv.width / (B.maxX - B.minX), cv.height / (B.maxY - B.minY)) * 0.98;
+  view.ox = cv.width / 2 - (B.minX + B.maxX) / 2 * view.s;
+  view.oy = cv.height / 2 + (B.minY + B.maxY) / 2 * view.s;
+  staticImg = null; draw();
+}
+const W2S = (x, y) => [x * view.s + view.ox, -y * view.s + view.oy];
+function drawStatic() {
+  const c = document.createElement('canvas'); c.width = cv.width; c.height = cv.height;
+  const g = c.getContext('2d');
+  g.fillStyle = '#121820'; g.fillRect(0, 0, c.width, c.height);
+  const [x0, y0] = W2S(B.minX, B.maxY), [x1, y1] = W2S(B.maxX, B.minY);
+  g.fillStyle = '#18202a'; g.fillRect(x0, y0, x1 - x0, y1 - y0);
+  g.fillStyle = 'rgba(70,140,80,0.28)';
+  for (const [x, y, r] of D.map.trees) { const [sx, sy] = W2S(x, y); g.beginPath(); g.arc(sx, sy, Math.max(1, r * view.s), 0, 7); g.fill(); }
+  for (const p of D.map.prisms) {
+    g.beginPath();
+    for (const ring of p.r) { for (let i = 0; i < ring.length; i += 2) { const [sx, sy] = W2S(ring[i], ring[i + 1]); i ? g.lineTo(sx, sy) : g.moveTo(sx, sy); } g.closePath(); }
+    const v = Math.min(1, p.h / 60);
+    g.fillStyle = p.k === 'b' && p.h <= 2.5 ? '#6b5235' : `rgb(${60 + 110 * v},${66 + 110 * v},${78 + 110 * v})`;
+    g.fill('evenodd');
+  }
+  staticImg = c;
+}
+let fi = 0, playing = false, last = 0, acc = 0;
+const F = D.frames;
+$('scrub').max = F.length - 1;
+function draw() {
+  if (!cv.width || !cv.height) return;
+  if (!staticImg) drawStatic();
+  const f = F[fi];
+  if ($('follow').checked) {
+    const o = f.m[D.slot];
+    if (o[4]) { const k = view.s; view.ox = cv.width / 2 - o[0] * k; view.oy = cv.height / 2 + o[1] * k; staticImg = null; drawStatic(); }
+  }
+  ctx.drawImage(staticImg, 0, 0);
+  const z = f.z;
+  ctx.lineWidth = 2;
+  let [cx, cy] = W2S(z[3], z[4]); ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.setLineDash([6, 6]);
+  ctx.beginPath(); ctx.arc(cx, cy, z[5] * view.s, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+  [cx, cy] = W2S(z[0], z[1]); ctx.strokeStyle = '#e04b4b'; ctx.beginPath(); ctx.arc(cx, cy, z[2] * view.s, 0, 7); ctx.stroke();
+  for (const [x, y, landed] of f.d) { const [sx, sy] = W2S(x, y); ctx.strokeStyle = '#c9a227'; ctx.setLineDash(landed ? [] : [3, 3]); ctx.beginPath(); ctx.arc(sx, sy, Math.max(4, 8 * view.s), 0, 7); ctx.stroke(); ctx.setLineDash([]); }
+  ctx.fillStyle = '#9aa';
+  for (const [x, y] of f.n) { const [sx, sy] = W2S(x, y); ctx.fillRect(sx - 2, sy - 2, 4, 4); }
+  if ($('trails').checked) {
+    for (let i = 0; i < 16; i++) {
+      ctx.strokeStyle = COL[D.labels[i]] + '55'; ctx.lineWidth = i === D.slot ? 2 : 1; ctx.beginPath();
+      let started = false;
+      for (let k = Math.max(0, fi - 150); k <= fi; k += 2) { const m = F[k].m[i]; if (!m[4]) break; const [sx, sy] = W2S(m[0], m[1]); started ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); started = true; }
+      ctx.stroke();
+    }
+  }
+  for (const [x1, y1, x2, y2, k] of f.b) { const a = W2S(x1, y1), b = W2S(x2, y2); ctx.strokeStyle = k ? '#8fd8ff' : '#ff4fd8'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.stroke(); }
+  for (const [x, y, k] of f.p) { const [sx, sy] = W2S(x, y); ctx.fillStyle = k === 1 ? '#ff9a3c' : k === 2 ? '#9aa' : '#fff'; ctx.fillRect(sx - 1, sy - 1, k === 1 ? 4 : 2, k === 1 ? 4 : 2); }
+  const R = Math.max(5, 2.5 * view.s);
+  f.m.forEach((m, i) => {
+    const [sx, sy] = W2S(m[0], m[1]); const col = COL[D.labels[i]];
+    if (!m[4]) { ctx.strokeStyle = col + '88'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx - 5, sy - 5); ctx.lineTo(sx + 5, sy + 5); ctx.moveTo(sx + 5, sy - 5); ctx.lineTo(sx - 5, sy + 5); ctx.stroke(); return; }
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(sx, sy, i === D.slot ? R * 1.4 : R, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.cos(m[2]) * R * 3, sy - Math.sin(m[2]) * R * 3); ctx.stroke();
+    ctx.fillStyle = '#000a'; ctx.fillRect(sx - R, sy - R - 6, R * 2, 3); ctx.fillStyle = m[3] > 0.5 ? '#5fbf6a' : m[3] > 0.25 ? '#ffb13c' : '#ff5a5a'; ctx.fillRect(sx - R, sy - R - 6, R * 2 * m[3], 3);
+    if (i === D.slot) { ctx.fillStyle = '#fff'; ctx.font = '12px system-ui'; ctx.fillText(D.modes[m[5]], sx + R * 1.6, sy - R); }
+  });
+  const o = f.m[D.slot];
+  $('time').textContent = `${Math.floor(f.t / 60)}:${String(Math.floor(f.t % 60)).padStart(2, '0')}`;
+  $('alive').textContent = f.m.filter(m => m[4]).length;
+  $('hp').textContent = o[4] ? `${Math.round(o[3] * 100)}%` : 'dead';
+  $('hpbar').style.width = `${o[4] ? o[3] * 100 : 0}%`;
+  $('mode').textContent = o[4] ? D.modes[o[5]] : '—';
+  $('weap').textContent = o[6].split('').map(c => WN[c]).join(' + ');
+  $('cubes').textContent = o[7];
+  $('feed').innerHTML = D.deaths.filter(d => d[0] <= f.t && d[3] !== null).map(d =>
+    `<div>${d[0].toFixed(0)}s · <b>${name(d[1])}</b> place ${d[2]} · ${d[3] >= 0 ? 'by ' + name(d[3]) : d[3] === -2 ? 'by drone' : 'zone'}</div>`).reverse().join('');
+  $('scrub').value = fi;
+}
+function tick(ts) {
+  if (playing) { acc += (ts - last) / 1000 * (+$('speed').value) / 0.2; while (acc >= 1 && fi < F.length - 1) { fi++; acc--; } if (fi >= F.length - 1) toggle(false); draw(); }
+  last = ts; requestAnimationFrame(tick);
+}
+function toggle(p) { playing = p ?? !playing; $('play').textContent = playing ? 'Pause' : 'Play'; }
+$('play').onclick = () => toggle();
+$('scrub').oninput = e => { fi = +e.target.value; draw(); };
+$('follow').onchange = () => { if (!$('follow').checked) fit(); else draw(); };
+$('trails').onchange = draw;
+cv.addEventListener('wheel', e => { e.preventDefault(); const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+  const mx = (e.clientX - r.left) * dpr, my = (e.clientY - r.top) * dpr, k = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+  view.ox = mx - (mx - view.ox) * k; view.oy = my - (my - view.oy) * k; view.s *= k; staticImg = null; draw(); }, { passive: false });
+let drag = null;
+cv.onmousedown = e => drag = [e.clientX, e.clientY];
+window.onmouseup = () => drag = null;
+window.onmousemove = e => { if (!drag) return; const dpr = devicePixelRatio || 1; view.ox += (e.clientX - drag[0]) * dpr; view.oy += (e.clientY - drag[1]) * dpr; drag = [e.clientX, e.clientY]; staticImg = null; draw(); };
+window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); toggle(); } });
+window.onresize = fit;
+
+// ---------- charts
+function lineChart(el, series, yLabel) {
+  const c = document.createElement('canvas'); el.appendChild(c);
+  const r = c.getBoundingClientRect(), dpr = devicePixelRatio || 1; c.width = r.width * dpr; c.height = 240 * dpr;
+  const g = c.getContext('2d'); g.scale(dpr, dpr); const w = r.width, h = 240, L = 40, Bm = 24;
+  const pts = series.flatMap(s => s.pts); if (!pts.length) { g.fillStyle = '#8a94a3'; g.fillText('no data yet', L, 20); return; }
+  const xmax = Math.max(...pts.map(p => p[0]), 1), ymin = Math.min(0, ...pts.map(p => p[1])), ymax = Math.max(...pts.map(p => p[1])) * 1.1 || 1;
+  const X = x => L + (w - L - 10) * x / xmax, Y = y => h - Bm - (h - Bm - 10) * (y - ymin) / (ymax - ymin);
+  g.strokeStyle = '#2a313c'; g.fillStyle = '#8a94a3'; g.font = '11px system-ui';
+  for (let k = 0; k <= 4; k++) { const y = ymin + (ymax - ymin) * k / 4; g.beginPath(); g.moveTo(L, Y(y)); g.lineTo(w - 10, Y(y)); g.stroke(); g.fillText(y.toFixed(1), 4, Y(y) + 4); }
+  g.fillText('generation', w - 70, h - 6); g.fillText(yLabel, L, 10);
+  let lx = L + 120;
+  for (const s of series) {
+    g.strokeStyle = s.color; g.fillStyle = s.color; g.lineWidth = s.dots ? 0 : 1.5;
+    if (s.dots) for (const [x, y] of s.pts) { g.beginPath(); g.arc(X(x), Y(y), 3, 0, 7); g.fill(); }
+    else { g.beginPath(); s.pts.forEach(([x, y], i) => i ? g.lineTo(X(x), Y(y)) : g.moveTo(X(x), Y(y))); g.stroke(); }
+    g.fillRect(lx, 2, 10, 3); g.fillText(s.name, lx + 14, 8); lx += g.measureText(s.name).width + 32;
+  }
+}
+function charts() {
+  const list = $('chartList'); list.innerHTML = '';
+  const runs = Object.entries(D.logs);
+  if (!runs.length) { list.textContent = 'No training logs yet.'; return; }
+  const pal = ['#ffd23f', '#4aa3ff', '#ff9a3c', '#5fbf6a', '#b48cff', '#ff5a5a'];
+  for (const [name, rows] of runs) {
+    const box = document.createElement('div'); box.className = 'chart';
+    const gens = rows.filter(r => r.fit_mean !== undefined), last = gens[gens.length - 1];
+    box.innerHTML = `<h3>${name} · ${gens.length} generations${last ? ` · σ ${last.sigma.toFixed(3)} · ${last.sec}s/gen` : ''}</h3>`;
+    list.appendChild(box);
+    lineChart(box, [
+      { name: 'fitness, population mean', color: pal[1], pts: gens.map(r => [r.gen, r.fit_mean]) },
+      { name: 'fitness, best candidate', color: pal[0], pts: gens.map(r => [r.gen, r.fit_best]) },
+      { name: 'practice pts, mean', color: pal[3], pts: gens.map(r => [r.gen, r.prac_mean]) },
+      { name: 'benchmark practice', color: pal[5], dots: true, pts: rows.filter(r => r.bench_prac !== undefined).map(r => [r.gen, r.bench_prac]) },
+      { name: 'benchmark FFA', color: pal[4], dots: true, pts: rows.filter(r => r.bench_ffa !== undefined).map(r => [r.gen, r.bench_ffa]) },
+    ], 'placement points');
+  }
+}
+$('tabReplay').onclick = () => { $('tabReplay').setAttribute('aria-selected', 'true'); $('tabCharts').setAttribute('aria-selected', 'false'); $('replay').style.display = ''; $('controls').style.display = ''; $('charts').style.display = 'none'; fit(); };
+$('tabCharts').onclick = () => { $('tabCharts').setAttribute('aria-selected', 'true'); $('tabReplay').setAttribute('aria-selected', 'false'); $('replay').style.display = 'none'; $('controls').style.display = 'none'; $('charts').style.display = 'block'; charts(); };
+requestAnimationFrame(tick); fit();
+</script>
+</body>
+</html>
