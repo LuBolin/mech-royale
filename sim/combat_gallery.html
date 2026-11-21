@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mech Royale · Combat trials</title>
+<style>
+:root{color-scheme:dark;--bg:#0d1519;--panel:#162126;--line:#34454a;--text:#f2f3ed;--muted:#acc0be;--mint:#70edcb}*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 Inter,Arial,sans-serif}
+main{max-width:1240px;margin:auto;padding:36px clamp(16px,4vw,56px) 48px}
+header,.head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}header{border-bottom:1px solid var(--line);padding-bottom:20px}
+h1,h2,p{margin:0}h1{font-size:clamp(30px,4vw,52px);letter-spacing:-.055em;line-height:1.1}h2{font-size:24px;letter-spacing:-.035em}
+a{color:var(--mint);text-underline-offset:4px}aside,.stats,.screen{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+.layout{display:grid;gap:20px;margin-top:24px}aside{padding:16px}#filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 16px}
+fieldset{border:0;padding:0;margin:14px 0 0;min-width:0}legend{color:var(--muted);font-size:13px;padding:0;margin:0 0 5px}.choices{display:flex;gap:5px;flex-wrap:wrap}button{font:inherit;border:1px solid var(--line);border-radius:6px;color:var(--text);background:#1e2c32;padding:8px;cursor:pointer}.choices button{font-size:14px;line-height:1.25}.choices button:hover{border-color:var(--muted)}button[aria-pressed=true]{border-color:var(--mint);color:var(--mint);background:#1d3733}:focus-visible{outline:2px solid var(--mint);outline-offset:2px}
+.head{margin:0 0 10px}.muted,.note{color:var(--muted)}.note{font-size:14px;margin:10px 0}
+iframe{width:100%;display:block;background:#0a1013;border:0}iframe{height:680px}
+[hidden]{display:none!important}.screen{overflow:hidden}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;overflow:hidden;background:var(--line);margin:14px 0}.metric{background:var(--panel);padding:12px}.metric small{display:block;color:var(--muted)}.metric b{font-size:21px;font-variant-numeric:tabular-nums}
+@media(max-width:760px){.layout{grid-template-columns:1fr}#filters{grid-template-columns:repeat(2,minmax(0,1fr));gap:3px 10px}.stats{grid-template-columns:repeat(2,1fr)}main{padding-top:20px}}
+
+#results{margin-top:32px}.table-wrap{max-height:75vh;overflow:auto;border:1px solid var(--line);border-radius:8px}table{width:100%;border-spacing:0;font-size:14px;font-variant-numeric:tabular-nums;white-space:nowrap}th,td{padding:7px 10px;text-align:left;border-bottom:1px solid var(--line)}th{position:sticky;top:0;background:#243238;color:var(--text)}tbody tr:nth-child(even){background:var(--panel)}tbody tr:has([aria-current=true]){background:#203f39}header nav{display:flex;align-items:center;gap:16px}
+#summaries h3{margin:24px 0 4px}#summaries .table-wrap{max-height:none}#summaries td:not(:first-child),#summaries th:not(:first-child){text-align:right}#results details{margin-top:24px}#results summary{cursor:pointer;color:var(--mint)}
+</style></head><body><main>
+<header><div><h1>Combat trials</h1><p class="muted" id="count"></p></div><nav><button id="showResults">View all results</button><a href="results.csv" download>Download CSV</a></nav></header>
+<div class="layout"><aside><h2>Select a case</h2><div id="filters"></div></aside>
+<section><div class="head"><h2 id="title"></h2><span id="outcome"></span></div>
+<div class="screen"><iframe id="viewer" title="Interactive map replay"></iframe></div>
+<p class="note" id="desc"></p><div class="stats" id="stats"></div><p id="comparison"></p><p class="note" id="context"></p>
+</section></div>
+<section id="results"><h2 tabindex="-1" id="resultsTitle">Results by weapon and range</h2>
+<div id="summaries"></div>
+<details><summary id="trialDetails">Individual trials</summary>
+<p class="note">Select an experiment in the table to open its replay. Shooting metrics belong to the reference bot in dodge trials and to our bot in aiming trials and duels.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-labelledby="trialDetails"><table aria-labelledby="trialDetails"><thead><tr id="columns"></tr></thead><tbody id="rows"></tbody></table></div></details></section></main>
+<script>
+const cases=/*CASES*/[], build=/*BUILD*/{};
+const $=id=>document.getElementById(id);
+const names={aim:"Aiming",open:"Dodging · open ground",cover:"Dodging · near cover",duel:"Two-way duel",live:"Reference bot",jump:"Jumping target",jet:"Jetting target",frozen:"Stationary control",normal:"Our bot’s movement",both:"Both bots active"};
+const fields=[["setup","Experiment"],["weapon","Weapon"],["distance","Starting range"],["movement","Movement"],["observed_alive","Players reported alive"],["seed","Map setup (seed)"]];
+const inputs={}; let current;
+const replayLinks=new Map();
+const label=(k,v)=>k==="distance"?({15:"Short",28:"Mid",40:"Long",30:"Short",80:"Mid",150:"Long"}[v]+" · "+v+" m"):names[v]??String(v).replace(/^./,c=>c.toUpperCase());
+for(const [key,title] of fields){
+ const group=document.createElement("fieldset"), legend=document.createElement("legend");
+ legend.textContent=title;
+ const choices=document.createElement("div");
+ choices.className="choices";
+ choices.id="f-"+key;
+ for(const value of new Set(cases.map(row=>row[key]))){
+   const button=document.createElement("button");
+   button.type="button";
+   button.value=value;
+   button.textContent=label(key,value);
+   button.onclick=()=>{
+     if(current[key]===value) return;
+     const want={...current,[key]:value};
+     if(key==="setup") want.movement=({aim:"live",open:"normal",cover:"normal",duel:"both"})[value];
+     select(want);
+   };
+   choices.append(button);
+ }
+ group.append(legend,choices);
+ $("filters").append(group);
+ inputs[key]=choices;
+}
+function select(want){
+ let pool=cases;
+ for(const [key] of fields){
+   const options=new Set(pool.map(row=>row[key]));
+   const chosen=options.has(want[key])?want[key]:options.values().next().value;
+   const available=new Set([...options].map(String));
+   for(const button of inputs[key].children){
+     button.hidden=!available.has(button.value);
+     button.setAttribute("aria-pressed",button.value===String(chosen));
+   }
+   pool=pool.filter(row=>row[key]===chosen);
+ }
+ if(current) replayLinks.get(current.key)?.removeAttribute("aria-current");
+ current=pool[0];const r=current,dodge=["open","cover"].includes(r.setup),src="cases/"+r.key;
+ replayLinks.get(r.key)?.setAttribute("aria-current","true");
+ history.replaceState(null,"","#"+r.key);$("title").textContent=names[r.setup]+" · "+label("weapon",r.weapon)+" · "+r.distance+" m"+(r.movement==="frozen"?" · Stationary control":"");$("outcome").textContent=r.outcome;
+ $("viewer").src=src+".html";
+ const detail={live:"The reference bot chooses its own movement and cannot shoot back.",jump:"The target crosses the lane and jumps when grounded.",jet:"The target crosses the lane with energy-limited jet bursts."};
+ $("desc").textContent=r.setup==="aim"?"Our bot aims from a fixed position. "+detail[r.movement]:(dodge?(r.movement==="normal"?"Our bot runs its usual movement logic. Only its fire commands are muted.":"Stationary control: our bot’s movement, jump, boost and fire commands are disabled.")+" The reference bot fires its "+r.weapon+".":"Both bots can move and fire their "+r.weapon+".");
+ const owner=dodge?"Reference":"Our", time=r.seconds+" s";
+ const metrics=[["Trial duration",time],[owner+" hits / shots",r.hits+" / "+r.shots],[owner+" hit rate",r.hit_pct===null?"No shots":r.hit_pct+"%"],[owner+" damage dealt",r.damage],["Damage per second",r.damage_per_s],["Time to first hit",r.first_hit_s===null?"No hit":r.first_hit_s+" s"],["Target visible",r.visible_s+" s"]];
+ const actor=dodge?"Our bot":"Opponent";
+ metrics.push([actor+" horizontal travel",r.target_travel_m+" m"],[actor+" time airborne",r.target_air_s+" s"],[actor+" time jetting",r.target_jet_s+" s"]);
+ if(r.weapon==="mortar")metrics.push(["Direct / splash-only hits",r.direct_mortar+" / "+(r.hits-r.direct_mortar)]);
+ if(r.setup==="duel")metrics.push(["Our damage taken",r.shooter_damage_taken]);
+ $("stats").replaceChildren(...metrics.map(([k,v])=>{const e=document.createElement("div"),a=document.createElement("small"),b=document.createElement("b");e.className="metric";a.textContent=k;b.textContent=v;e.append(a,b);return e}));
+ const pair=dodge&&cases.find(p=>p.setup===r.setup&&p.weapon===r.weapon&&p.seed===r.seed&&p.distance===r.distance&&p.observed_alive===r.observed_alive&&p.movement!==r.movement);
+ $("comparison").textContent="";if(pair){const f=r.movement==="frozen"?r:pair,n=r.movement==="normal"?r:pair;const a=document.createElement("a");a.href="#"+pair.key;a.textContent=pair.movement==="frozen"?"Watch stationary control":"Watch normal movement";$("comparison").append("Movement disabled "+f.seconds+" s · normal movement "+n.seconds+" s. ",a);if(!f.hits)$("comparison").append(" The stationary bot took no hits.")}
+ $("context").textContent="Kit arena · local simulator · "+(r.setup==="aim"?"15":"60")+" s limit. "+(r.observed_alive===16?"Only the two visible participants are simulated; both receive a count of 16 players alive.":"Two participants.");
+}
+window.addEventListener("keydown", e=>{
+ if(e.code!=="Space" || e.target.closest("button,a,input,select,textarea")) return;
+ e.preventDefault();
+ if(!e.repeat) $("viewer").contentWindow.postMessage("toggle-replay","*");
+});
+function fromHash(){
+ const key=location.hash.slice(1).replace(/^(aim-[^-]+-[^-]+)-(still|left|right)-/, "$1-live-");
+ select(cases.find(r=>r.key===key)??cases.find(r=>r.setup==="aim"&&r.movement==="live"&&r.distance===80&&r.seed===42)??cases[0]);
+}
+function summaryTable(title, note, headings, rows){
+ const heading=document.createElement("h3"), explanation=document.createElement("p");
+ heading.textContent=title;explanation.className="note";explanation.textContent=note;
+ const wrap=document.createElement("div"),table=document.createElement("table");
+ wrap.className="table-wrap";table.setAttribute("aria-label",title);
+ const header=table.createTHead().insertRow();
+ for(const name of headings){const th=document.createElement("th");th.scope="col";th.textContent=name;header.append(th)}
+ const body=table.createTBody();
+ for(const values of rows){const tr=body.insertRow();for(const value of values)tr.insertCell().textContent=value}
+ wrap.append(table);$("summaries").append(heading,explanation,wrap);
+}
+const rangeColumns=["Weapon","Short · 30 m","Mid · 80 m","Long · 150 m"];
+const aimRows=[],dodgeRows=[],duelRows=[];
+for(const weapon of ["gun","mortar","laser","lightning"]){
+ const weaponName=label("weapon",weapon);
+ const rowName=weapon==="lightning"?"Lightning · 15 / 28 / 40 m":weaponName;
+ const aim=[rowName],dodge=[rowName];
+ for(const distance of weapon==="lightning"?[15,28,40]:[30,80,150]){
+   const group=cases.filter(r=>r.weapon===weapon&&r.distance===distance);
+   aim.push(["live","jump","jet"].map(mode=>{
+     const trials=group.filter(r=>r.setup==="aim"&&r.movement===mode);
+     const shots=trials.reduce((n,r)=>n+r.shots,0),hits=trials.reduce((n,r)=>n+r.hits,0);
+     return shots?Math.round(100*hits/shots)+"%":"—";
+   }).join(" / "));
+   dodge.push(["frozen","normal"].map(mode=>{
+     const trials=group.filter(r=>(r.setup==="open"||r.setup==="cover")&&r.movement===mode);
+     return trials.length?(trials.reduce((n,r)=>n+r.seconds,0)/trials.length).toFixed(1):"—";
+   }).join(" / "));
+   const duels=group.filter(r=>r.setup==="duel");
+   duelRows.push([weaponName,label("distance",distance),...[[true,false],[false,true],[false,false],[true,true]].map(
+     ([ours,theirs])=>duels.filter(r=>r.shooter_alive===ours&&r.target_alive===theirs).length)]);
+ }
+ aimRows.push(aim);dodgeRows.push(dodge);
+}
+summaryTable("Aim accuracy","Hit rates against the reference bot / jumping target / jetting target. Each rate uses total hits divided by total shots.",rangeColumns,aimRows);
+summaryTable("Dodge survival","Average seconds survived with movement disabled / normal movement. Includes open ground and nearby cover, both reported player counts, and a 60-second limit.",rangeColumns,dodgeRows);
+summaryTable("Two-way duels","Three starting positions per weapon and range. Both bots carry the same weapon.",["Weapon","Starting distance","Our wins","Our losses","Both down","Both alive at 60 s"],duelRows);
+$("trialDetails").textContent="Individual trials ("+cases.length+")";
+const columns=["Experiment / replay","Weapon","Range (m)","Movement","Reported alive","Seed","Outcome","Time (s)","Hits / shots","Hit rate","Damage dealt","Damage / s","First hit (s)","Visible (s)","Target travel (m)","Airborne (s)","Jetting (s)","Mortar direct / splash only","Shooter damage taken","Shots in flight"];
+for(const heading of columns){
+ const th=document.createElement("th");th.scope="col";th.textContent=heading;$("columns").append(th);
+}
+const experimentOrder=["aim","open","cover","duel"];
+const sortedCases=[...cases].sort((a,b)=>experimentOrder.indexOf(a.setup)-experimentOrder.indexOf(b.setup)||a.weapon.localeCompare(b.weapon)||a.distance-b.distance||a.observed_alive-b.observed_alive||a.seed-b.seed||a.movement.localeCompare(b.movement));
+for(const r of sortedCases){
+ const row=$("rows").insertRow(),link=document.createElement("a");
+ link.href="#"+r.key;link.textContent=names[r.setup];replayLinks.set(r.key,link);
+ link.onclick=e=>{
+   if(e.ctrlKey||e.metaKey||e.shiftKey||e.altKey) return;
+   e.preventDefault();select(r);$("title").tabIndex=-1;$("title").focus();
+   $("title").scrollIntoView({block:"start"});
+ };
+ row.insertCell().append(link);
+ const values=[label("weapon",r.weapon),r.distance,names[r.movement],r.observed_alive,r.seed,r.outcome,r.seconds,
+   r.hits+" / "+r.shots,r.hit_pct==null?"No shots":r.hit_pct+"%",r.damage,r.damage_per_s,r.first_hit_s??"—",
+   r.visible_s,r.target_travel_m,r.target_air_s,r.target_jet_s,
+   r.weapon==="mortar"?r.direct_mortar+" / "+(r.hits-r.direct_mortar):"—",r.shooter_damage_taken,r.in_flight];
+ for(const value of values) row.insertCell().textContent=value??"—";
+}
+$("showResults").onclick=()=>{$("resultsTitle").focus();$("resultsTitle").scrollIntoView({block:"start"})};
+$("count").textContent=cases.length+" cases on the kit arena"+(build.revision?" · "+build.revision:"")+(build.matched?" · All results match the saved baseline":"");window.onhashchange=fromHash;fromHash();
+</script></body></html>

@@ -58,7 +58,7 @@ def intent(bot, act):
             round(mv[0], 2), round(mv[1], 2), round(aim[0], 2), round(aim[1], 2), bits]
 
 
-def record(M, every=4, slot=None):
+def record(M, every=4, slot=None, end_time=None):
     """Play M to the end. Returns frames, deaths, hits [t, attacker, target, hp lost, weapon] and
     shots (per mech, the times it fired). The engine is observed through wrappers, not changed."""
     frames, deaths, hits, beams = [], [], [], []
@@ -85,7 +85,7 @@ def record(M, every=4, slot=None):
             shots[owner.id].append(round(M.t, 2))
         return spawn(kind, owner, *a, **k)
     M._damage, M._spawn_proj = on_damage, on_spawn
-    end = M.cfg["match"]["duration_s"]
+    end = M.cfg["match"]["duration_s"] if end_time is None else end_time
     while M.t < end - 1e-9:
         if M.tick % 2 == 0:
             M.decide()
@@ -100,14 +100,14 @@ def record(M, every=4, slot=None):
                 k = getattr(m, "killer", None)
                 deaths.append([round(M.t, 1), m.id, m.place, k.id if k is not None and k.kind == "mech" else
                                (-2 if k is not None else -1)])
-        if M.tick % every == 0:
+        if M.tick % every == 0 or (end_time is not None and (M.t >= end or sum(m.alive for m in M.mechs) <= 1)):
             zc, zr, ph = M.zone_at(M.t)
             MODES.extend({getattr(m.bot, "mode", "roam") for m in M.mechs} - set(MODES))  # brain.py adds modes
             frames.append({
                 "t": round(M.t, 2),
                 "m": [[round(m.x, 1), round(m.y, 1), round(m.yaw, 2), round(max(0.0, m.hp) / m.max_hp, 2),
                        1 if m.alive else 0, MODES.index(getattr(m.bot, "mode", "roam")),
-                       "".join(w["kind"][0] for w in m.slots if w), m.cubes,
+                       "".join("t" if w["kind"] == "lightning" else w["kind"][0] for w in m.slots if w), m.cubes,
                        -1 if getattr(m.bot, "cur_target", None) is None else m.bot.cur_target,
                        round(m.z, 1), round(m.pitch, 2), int(m.jetting) | (not m.grounded) << 1] for m in M.mechs],
                 "p": [[round(p.x, 1), round(p.y, 1), KINDS.get(p.kind, 0), round(p.z, 1), p.id] for p in M.projs],
@@ -126,8 +126,8 @@ def record(M, every=4, slot=None):
     return frames, deaths, hits, shots
 
 
-def static_map():
-    w = json.load(open(os.path.join(MAP_DIR, "v2", "world.json")))
+def static_map(map_dir=MAP_DIR):
+    w = json.load(open(os.path.join(map_dir, "v2", "world.json")))
     prisms = [{"k": p["kind"][0], "h": round(p["top"] - p["base"], 1), "b": round(p["base"], 1),
                "r": [[round(v, 1) for v in ring] for ring in [p["ring"]] + list(p.get("holes") or [])]}
               for p in w["prisms"]]
@@ -137,7 +137,7 @@ def static_map():
     trees = [[round(d[i + fi[k]], 1) for k in ("crownX", "crownY", "crownR", "z", "crownBase", "height", "x", "y")]
              for i in range(0, len(d), n)]
     t = w["terrain"]  # every 4th vertex, in decimetres: enough for the 3D view, 16x smaller than the grid
-    H = np.fromfile(os.path.join(MAP_DIR, "v2", t["file"]), "<i2").reshape(t["ny"], t["nx"])[::4, ::4]
+    H = np.fromfile(os.path.join(map_dir, "v2", t["file"]), "<i2").reshape(t["ny"], t["nx"])[::4, ::4]
     terrain = {"x0": t["minX"], "y0": t["minY"], "step": t["step"] * 4, "nx": H.shape[1], "ny": H.shape[0],
                "h": np.round(H * t["scale"] * 10).astype(int).ravel().tolist()}
     barriers = [[b["height"]] + [round(v, 1) for v in b["line"]] for b in w["barriers"]]
