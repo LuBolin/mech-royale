@@ -104,6 +104,20 @@ A second Tier 2 run used 200 practice and 100 FFA matches, with 15 pre-survey bo
 - final_r: exactly 0.
 - All Tier 2: +0.06 / −0.59 ± 0.38.
 
+## Arnav "v5" package (2026-11-21, late)
+Our board score with Tier 1 on is 3.50; the top-32 bar is above 5.3. Practice score is close to a kill count, because house bots never attack each other. Three teams' real-board logs agree on one recipe:
+- **Arnav** (`dev/OVERNIGHT.md`): never retreat + hold 110 m + target lowest hp×(1+d/120) in line of sight + mid-fight looting moved 3.81 → 5.13 as one package. Single knobs added on top (looser gun gate, slower strafe, selective engagement, sticky targets, economy) all scored lower.
+- **alexwilldev** (`src/params.ts:29-30`): fight distance by weapon, gun 90 m and laser 110 m, scored 4.13. Laser distance 255 m gave 3.42, 150 m gave 3.85, 50 m gave 4.04. Lightning for close fights scored lower.
+- **giddygiddyboy** (5.54, as read by Arnav): laser 120 m, gun 85 m, seek a laser first from up to 240 m.
+
+All weapons outrange these distances (gun 230 m, laser 280 m). The distance sets hit rates, not reach: a gun round takes 0.4 s to cross 100 m, and the house gun hits 90% under 40 m but 61% at 80–120 m (jack).
+
+New knobs, default off (`bot/params.py`, end of `SPEC`): `berserk`, `tgt_hpd`, `laser_dist`, `fight_loot`, `fight_loot_dist`. `bot/genome.json` turns the package on: those knobs plus `engage_range` 200, `pref_dist` 90, `laser_dist` 110, `w_laser` 1.0 and `w_lightning` 0. Our gun gate is already atan(3.0/d), about viktor's 1.6·atan(2/d), so it is unchanged.
+
+Sim smoke test (`runs/ab/v5pkg.txt`, 96 paired practice seeds, base = defaults at 1.50): berserk −0.32 ± 0.17, range −0.18 ± 0.18, tgt_hpd +0.15 ± 0.12, fight_loot +0.20 ± 0.16, package −0.03 ± 0.17. Every knob fires and nothing crashes. The sim scores the same base at 1.50 that the board scores at 3.50, and Arnav's sim ranked 70 m against 110 m the opposite way (−0.91), so the board decides. The package passes the kit check in the match container: 300 of 300 answers in time, p99 2.8 ms.
+
+Board submissions, one commit each, all on top of the package: package; package without `berserk`; package with `pref_dist` 110; package with `hostile_only` 0.
+
 Other checks:
 - **FFA detector:** at least 2 foreign deaths before 150 s latched in 0 of 64 practice matches and 4 of 4 FFA matches. A single early death misfired in 6 of 64 practice matches, so that rule was dropped.
 - **Latency per tick** (6 practice matches): mean 0.14 ms, p99 1.3 ms, max 2.2 ms. That is unchanged from the pre-survey bot and well under the 50 ms limit.

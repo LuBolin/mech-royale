@@ -86,6 +86,15 @@ UPGRADES = [
 _UP_DEFAULT = {"armor": 0.9, "plating": 0.85, "nanites": 0.7, "gun_rate": 0.65, "gun_damage": 0.6,
                "servos": 0.55, "laser_damage": 0.6, "gyros": 0.5}
 SPEC += [("up_" + u, 0, 1, _UP_DEFAULT.get(u, 0.3), "upgrade preference") for u in UPGRADES]
+# Appended last so genome vectors saved before these knobs existed still decode.
+# Arnav's "v5" package (real board 3.81 -> 5.13); defaults keep the old behaviour, genome.json turns them on.
+SPEC += [
+    ("berserk", 0, 1, 0, ">= 0.5: never flee from a fight"),
+    ("tgt_hpd", 0, 1, 0, ">= 0.5: target the lowest hp * (1 + dist / 120) in line of sight"),
+    ("laser_dist", 0, 180, 0, "preferred fighting distance while holding a laser; 0 = pref_dist"),
+    ("fight_loot", 0, 1, 0, ">= 0.5: while fighting, walk over cubes within 30 m and fetch a better weapon"),
+    ("fight_loot_dist", 0, 250, 200, "max distance to fetch a better weapon mid-fight"),
+]
 
 NAMES = [s[0] for s in SPEC]
 GENOME_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "genome.json")

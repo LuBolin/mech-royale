@@ -62,7 +62,8 @@ class Bot:
         self.last_hit = -1e9
         self.flee_cache = (-1.0, None)  # (valid until t, (ux, uy))
         self.on = {k: p[k] >= 0.5 for k in ("sidestep", "hide", "hostile_only", "mortar_laser", "ffa_detect",
-                                             "fire_early", "laser_smart", "ghost_fire", "pincer")}
+                                             "fire_early", "laser_smart", "ghost_fire", "pincer", "berserk",
+                                             "tgt_hpd", "fight_loot")}
         self.hostile = {}  # mech id -> last t it hit us, aimed at us or came close
         self.loot = {}  # pickup id -> (kind, pos, t last seen)
         self.cur_target = None
@@ -167,11 +168,17 @@ class Bot:
             d = math.hypot(m["pos"][0] - x, m["pos"][1] - y)
             if d > p["engage_range"] or not hostile(m):
                 continue
-            s = d / 100.0 + p["tgt_w_hp"] * m.get("hp", 1000) / max(1.0, m.get("max_hp", 1400))
-            if hit_recent and self.threat[2] == m["id"]:
-                s -= p["tgt_w_threat"]
-            if m["id"] == self.cur_target:
-                s -= p["stick"]
+            if self.on["tgt_hpd"]:
+                # Arnav v5 (real board): weakest and nearest among the mechs we can hit now, no stickiness
+                s = m.get("hp", 1400) / 1400.0 * (1 + d / 120.0)
+                if not W.los(x, y, z + st["eye_height"], m["pos"][0], m["pos"][1], m["pos"][2] + 4.5):
+                    s += 1e6
+            else:
+                s = d / 100.0 + p["tgt_w_hp"] * m.get("hp", 1000) / max(1.0, m.get("max_hp", 1400))
+                if hit_recent and self.threat[2] == m["id"]:
+                    s -= p["tgt_w_threat"]
+                if m["id"] == self.cur_target:
+                    s -= p["stick"]
             if self.ffa and t - self.busy.get(m["id"], -1e9) < 2:
                 s -= p["third_party"]
             if s < best:
@@ -236,14 +243,15 @@ class Bot:
                 fight = target is not None and hpf >= p["flee_hp"] and n <= p["max_enemies"] and (
                     strength * aggr >= sum(th[3] for th in threats)
                     or (hit_recent and self.threat[2] == target["id"]))
-                mode = "fight" if fight or (finish and gap_dir is None) else "flee"
+                # berserk: practice hunters share vision and house bots only die to us, so running never pays
+                mode = "fight" if fight or (finish and gap_dir is None) or self.on["berserk"] else "flee"
             elif self.on["hide"] and hpf < HEAL_HP and t - self.last_hit < 45:
                 mode = "hide"  # contact broken: stand still (silent) until regen refills us
         elif target is not None:
             near = sum(1 for m in mechs if math.hypot(m["pos"][0] - x, m["pos"][1] - y) < p["engage_range"])
             fight = hpf >= p["flee_hp"] and strength * aggr >= target.get("hp", 1400) and near <= p["max_enemies"]
             mode = "fight" if fight or (hit_recent and self.threat[2] == target["id"] and hpf >= p["flee_hp"]) else "flee"
-        if gap_dir is not None and mode in ("fight", "flee"):
+        if gap_dir is not None and mode in ("fight", "flee") and not self.on["berserk"]:
             mode = "flee"
         # early zone damage is a fraction of one gun's dps: finish breaking contact before running for the zone
         flee_first = self.survival and mode == "flee" and zone["dps"] < 50 and me["hp"] > 10 * zone["dps"]
@@ -259,10 +267,13 @@ class Bot:
             mvx, mvy = home[0] - x, home[1] - y
             boost = (not me["in_zone"] or tts < need) and energy > p["boost_energy"] * 0.5
         elif mode == "fight":
-            tx, ty = target["pos"][0], target["pos"][1]
+            # berserk with no visible target: strafe against the unseen attacker's estimated position
+            tx, ty = target["pos"][:2] if target else threats[0][:2]
             d = max(1e-3, math.hypot(tx - x, ty - y))
             vx_, vy_ = (tx - x) / d, (ty - y) / d
             pref = p["pref_dist"]
+            if "laser" in kinds and p["laser_dist"] > 0:
+                pref = p["laser_dist"]
             if "lightning" in kinds:
                 pref = min(pref, p["lightning_dist"])
             radial = clamp((d - pref) / 15.0, -1.0, 1.0)
@@ -272,6 +283,22 @@ class Bot:
                 self.strafe_next = t + p["strafe_period"] * (0.5 + rng.random())
             s = p["strafe"] * self.strafe
             mvx, mvy = vx_ * radial - vy_ * s, vy_ * radial + vx_ * s
+            if self.on["fight_loot"]:
+                # keep shooting (aim is independent of movement) while walking over cubes or to a better weapon
+                g = None
+                for c in obs["cubes"]:
+                    dl = math.hypot(c["pos"][0] - x, c["pos"][1] - y)
+                    if dl < 30 and abs(c["pos"][2] - z) < 4 and (g is None or dl < g[0]):
+                        g = (dl, c["pos"])
+                if g is None:
+                    cur = wpref[kinds[1]] + p["swap_margin"] if kinds[1] else 0.0
+                    for k, ppos, _ in self.loot.values():
+                        dl = math.hypot(ppos[0] - x, ppos[1] - y)
+                        if k not in kinds and wpref[k] > cur and dl < p["fight_loot_dist"] and (
+                                math.hypot(ppos[0] - nc[0], ppos[1] - nc[1]) < nr) and (g is None or dl < g[0]):
+                            g = (dl, ppos)
+                if g is not None:
+                    mvx, mvy = g[1][0] - x, g[1][1] - y
         elif mode == "flee":
             if gap_dir is not None:
                 mvx, mvy = gap_dir
