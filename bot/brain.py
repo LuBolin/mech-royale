@@ -56,6 +56,7 @@ class Bot:
         self.goal_hint = None  # (x, y) set by subclasses (house bots hunting)
         self.mode = "roam"
         self.goal = None  # (x, y, z, kind) the bot is walking to this tick; read by sim/viewer.py only
+        self.capture_sample = None  # (drop id, progress) from the previous observation
         # Survival logic (threat list, unseen-fire response, hide-and-heal). House bots switch it off so the
         # simulator's opponents keep the logic that was calibrated against real practice scores.
         self.survival = p.get("survival", 1.0) >= 0.5
@@ -170,10 +171,13 @@ class Bot:
             if d > p["engage_range"] or not hostile(m):
                 continue
             if self.on["tgt_hpd"]:
-                # Arnav v5 (real board): weakest and nearest among the mechs we can hit now, no stickiness
                 s = m.get("hp", 1400) / 1400.0 * (1 + d / 120.0)
-                if not W.los(x, y, z + st["eye_height"], m["pos"][0], m["pos"][1], m["pos"][2] + 4.5):
+                mx, my, mz = m["pos"]
+                center_z = mz + 4.5 * (1 + 0.05 * m.get("cubes", 0))
+                if not W.los(x, y, z + st["eye_height"], mx, my, center_z):
                     s += 1e6
+                elif m["id"] == self.cur_target:
+                    s *= 1 - p["hpd_keep_margin"]
             else:
                 s = d / 100.0 + p["tgt_w_hp"] * m.get("hp", 1000) / max(1.0, m.get("max_hp", 1400))
                 if hit_recent and self.threat[2] == m["id"]:
@@ -236,6 +240,8 @@ class Bot:
         aggr = p["aggr"] * (p["late_aggr"] if obs["alive"] <= p["late_alive"] else 1.0)
         if self.ffa:
             aggr *= p["ffa_aggr"]
+        # Trading health can buy placement in practice. In a free-for-all other mechs can eliminate each other.
+        berserk = self.on["berserk"] and (not self.ffa or obs["alive"] <= 2)
         finish = target is not None and target.get("hp", 1400) < p["finish_hp"] * target.get("max_hp", 1400)
         if self.survival:
             if threats:
@@ -245,14 +251,14 @@ class Bot:
                     strength * aggr >= sum(th[3] for th in threats)
                     or (hit_recent and self.threat[2] == target["id"]))
                 # berserk: practice hunters share vision and house bots only die to us, so running never pays
-                mode = "fight" if fight or (finish and gap_dir is None) or self.on["berserk"] else "flee"
+                mode = "fight" if fight or (finish and gap_dir is None) or berserk else "flee"
             elif self.on["hide"] and hpf < HEAL_HP and t - self.last_hit < 45:
                 mode = "hide"  # contact broken: stand still (silent) until regen refills us
         elif target is not None:
             near = sum(1 for m in mechs if math.hypot(m["pos"][0] - x, m["pos"][1] - y) < p["engage_range"])
             fight = hpf >= p["flee_hp"] and strength * aggr >= target.get("hp", 1400) and near <= p["max_enemies"]
             mode = "fight" if fight or (hit_recent and self.threat[2] == target["id"] and hpf >= p["flee_hp"]) else "flee"
-        if gap_dir is not None and mode in ("fight", "flee") and not self.on["berserk"]:
+        if gap_dir is not None and mode in ("fight", "flee") and not berserk:
             mode = "flee"
         # early zone damage is a fraction of one gun's dps: finish breaking contact before running for the zone
         flee_first = self.survival and mode == "flee" and zone["dps"] < 50 and me["hp"] > 10 * zone["dps"]
@@ -286,6 +292,8 @@ class Bot:
                 self.strafe_next = t + p["strafe_period"] * (0.5 + rng.random())
             s = p["strafe"] * self.strafe
             mvx, mvy = vx_ * radial - vy_ * s, vy_ * radial + vx_ * s
+            if p["score_moves"] >= 0.5 and target is not None and me["grounded"]:
+                mvx, mvy = self.fight_direction(me, target, mechs, pref, zone, (mvx, mvy))
             if self.on["fight_loot"]:
                 # keep shooting (aim is independent of movement) while walking over cubes or to a better weapon
                 g = None
@@ -389,6 +397,20 @@ class Bot:
                     scale, boost = 1.0, energy > 5  # race to the first loot before the squad wakes up
                 mvx, mvy = mvx / m_ * scale, mvy / m_ * scale
 
+        if p["finish_drop"] >= 0.5:
+            drop = self.finishing_drop(obs, mechs)
+            if (drop is not None and mode in ("fight", "roam") and not zone_urgent
+                    and not (hit_recent and hpf < 0.25)):
+                px, py, pz = drop["pos"]
+                mode = self.mode = "capture"
+                self.goal = (px, py, pz, "drop")
+                goal_z = None
+                boost = False
+                if math.hypot(px - x, py - y) > 0.6 * drop["radius"]:
+                    mvx, mvy = px - x, py - y
+                else:
+                    mvx = mvy = 0.0
+
         # ---- dodge incoming mortar shells (their path is visible and gravity is known)
         shell = self.shell_threat(obs["projectiles"], x, y, z)
         if shell is not None:
@@ -479,6 +501,10 @@ class Bot:
         if gun and target is None and gun["reload"] <= 0 and gun["ammo"] < gun["stats"]["mag"] * p["reload_frac"]:
             a["reload"] = True
 
+        if (p["fight_boost"] >= 0.5 and mode == "fight" and me["grounded"]
+                and not jump and m_ > 1e-3 and energy > p["boost_energy"]):
+            boost = True
+
         # weapon pickup within reach
         for pk in obs["pickups"]:
             k = pk["kind"]
@@ -530,6 +556,7 @@ class Bot:
         want = (g_yaw, g_pitch)
         fire1 = False
         k1, w1 = kinds[1], weapons[1]
+        share_aim = k1 == "laser" and p.get("gun_laser_cooldown", 0) >= 0.5
         use = "gun"
         if k1 == "mortar" and w1["cooldown"] < 0.3:
             ms = w1["stats"]
@@ -552,9 +579,24 @@ class Bot:
             if w1.get("charge", 0) <= 0:
                 # firing is held until the weapon is ready, so asking one tick early loses nothing
                 fire1 = w1["cooldown"] <= (0.1 + 1e-6 if self.on["fire_early"] else 0.05)
+                if share_aim and not fire1 and gun and gun["ammo"] > 0 and gun["reload"] <= 0:
+                    want = (g_yaw, g_pitch)
+                    use = "gun"
             else:
                 ready = w1["charge"] >= full * p["laser_release"] - 0.05
                 aimed = abs(wrap(yaw - d_yaw)) < tol and abs(pitch - d_pitch) < tol
+                if (p.get("laser_lethal", 0) >= 0.5 and not ready and aimed
+                        and w1["charge"] >= ls["min_charge"] and target.get("hp") is not None
+                        and me["stats"]["min_pitch"] <= d_pitch <= me["stats"]["max_pitch"]
+                        and math.hypot(dxy, tcz - muz) < ls["range"]):
+                    cubes = self.cfg["cubes"]
+                    frac = ls["min_frac"] + (1 - ls["min_frac"]) * min(1.0, w1["charge"] / full)
+                    damage = ls["damage"] * frac * (1 + cubes["damage_per_cube"] * min(me["cubes"], cubes["stat_cap"]))
+                    if "mortar" in target.get("weapons", ()):
+                        damage *= 1 + ls.get("cookoff", 0.0)
+                    # Enemy armor is hidden. Discount the current charge rather than counting a future tick.
+                    if 0.8 * damage >= target["hp"] and W.los(x, y, muz, tx, ty, tcz):
+                        ready = True
                 if self.on["laser_smart"] and w1["charge"] >= ls["min_charge"] - 1e-6:
                     # the shot leaves next tick: judge aim after one tick of torso slew toward the target's next spot
                     turn = me["stats"].get("turn_rate", 4.0) * 0.1
@@ -582,7 +624,54 @@ class Bot:
         fire0 = False
         if gun and vis and use != "mortar":
             fire0 = err_y < tol and err_p < tol * 1.5 and dxy < gun["stats"]["range"] * p["fire_range"]
+            slew_s = p.get("gun_slew_s", 0.0)
+            if slew_s > 0 or share_aim:
+                # Both triggers share one torso. Only credit motion toward the commanded aim,
+                # and keep the gun quiet when a different weapon needs an incompatible line.
+                st = me["stats"]
+                slew_s = clamp(slew_s, 0.0, 0.05)
+                yaw_step = st["turn_rate"] * slew_s
+                pitch_step = st["pitch_rate"] * slew_s
+                next_yaw = yaw + clamp(wrap(want[0] - yaw), -yaw_step, yaw_step)
+                command_pitch = clamp(want[1], st["min_pitch"], st["max_pitch"])
+                next_pitch = pitch + clamp(command_pitch - pitch, -pitch_step, pitch_step)
+                fire0 = (abs(wrap(want[0] - g_yaw)) < tol and abs(want[1] - g_pitch) < tol * 1.5
+                         and st["min_pitch"] <= g_pitch <= st["max_pitch"]
+                         and abs(wrap(next_yaw - g_yaw)) < tol and abs(next_pitch - g_pitch) < tol * 1.5
+                         and math.dist((x, y, muz), (lx, ly, lz)) < gun["stats"]["range"] * p["fire_range"]
+                         and W.los(x, y, muz, lx, ly, lz))
         return want[0], want[1], fire0, fire1
+
+    def finishing_drop(self, obs, mechs):
+        """Return a nearly completed ring while its clock advances and the area stays safe."""
+        me = obs["self"]
+        previous = self.capture_sample
+        self.capture_sample = None
+        for drop in obs["drops"]:
+            if drop["holder"] != me["id"] or drop["lands_in"] > 0:
+                continue
+            progress = drop["progress"]
+            self.capture_sample = (drop["id"], progress)
+            remaining = drop["capture_s"] - progress
+            if (previous is None or previous[0] != drop["id"] or progress <= previous[1]
+                    or not 0 < remaining <= 1.2 + 1e-6):
+                continue
+            px, py, _ = drop["pos"]
+            x, y, _ = me["pos"]
+            radius = drop["radius"]
+            if math.hypot(x - px, y - py) > radius:
+                continue
+            zone = obs["zone"]
+            horizon = remaining + 0.1
+            if math.dist((px, py), zone["center"]) + radius > zone["radius"]:
+                continue
+            if (obs["t"] + horizon >= zone["shrink_start"] and
+                    math.dist((px, py), zone["next_center"]) + radius > zone["next_radius"]):
+                continue
+            contest_radius = radius + self.cfg["mech"]["boost_speed"] * horizon
+            if all(math.hypot(m["pos"][0] - px, m["pos"][1] - py) > contest_radius for m in mechs):
+                return drop
+        return None
 
     def shell_threat(self, projectiles, x, y, z):
         """Landing point of a visible mortar shell that will burst near us within dodge_shell_t, else None."""
@@ -631,6 +720,53 @@ class Bot:
                     nx, ny = -vy / s * self.strafe, vx / s * self.strafe
                 best = (tc, (nx, ny))
         return best[1] if best else None
+
+    def fight_direction(self, me, target, mechs, preferred, zone, fallback):
+        """Score eight short ground moves around the selected mech."""
+        world, st = self.world, me["stats"]
+        x, y, z = me["pos"]
+        tx, ty, tz = target["pos"]
+        dist = math.hypot(tx - x, ty - y)
+        if dist < 0.01:
+            return fallback
+        rx, ry = (tx - x) / dist, (ty - y) / dist
+        tx_side, ty_side = -ry * self.strafe, rx * self.strafe
+        crossfire = sorted((m for m in mechs if m["id"] != target["id"]),
+                           key=lambda m: math.hypot(m["pos"][0] - x, m["pos"][1] - y))[:2]
+        crossfire = [m["pos"] for m in crossfire if math.hypot(m["pos"][0] - x, m["pos"][1] - y) < 230]
+        target_z = tz + 4.5 * (1 + 0.05 * target.get("cubes", 0))
+        cx, cy = zone["center"]
+        best, direction = -math.inf, fallback
+        diagonal = math.sqrt(0.5)
+        for radial, side in ((0, 1), (0, -1), (diagonal, diagonal), (diagonal, -diagonal),
+                             (-diagonal, diagonal), (-diagonal, -diagonal), (1, 0), (-1, 0)):
+            ux, uy = radial * rx + side * tx_side, radial * ry + side * ty_side
+            reach = 9.0
+            if not world.clear(x, y, z, ux, uy, reach, st["step_up"], st["height"]):
+                reach = 6.0  # the downstream steering probe uses the same clearance distance
+                if not world.clear(x, y, z, ux, uy, reach, st["step_up"], st["height"]):
+                    continue
+            px, py = x + reach * ux, y + reach * uy
+            if math.hypot(px - cx, py - cy) > zone["radius"]:
+                continue
+            floor = world.floor(px, py, z, st["step_up"])
+            if floor < z - 4.5:  # stay on the current fighting level instead of stepping off a roof
+                continue
+            # Each metre of range correction earns a point. Favor strafing when already in range.
+            score = abs(dist - preferred) - abs(math.hypot(tx - px, ty - py) - preferred)
+            score += 2.0 * abs(side) + 0.5 * side + 0.3 * reach
+            if score <= best:  # visibility checks below can only subtract points
+                continue
+            if not world.los(px, py, floor + st["muzzle_height"], tx, ty, target_z, 3.0):
+                score -= 12.0
+            for ex, ey, ez in crossfire:
+                if score <= best:
+                    break
+                if world.los(ex, ey, ez + st["muzzle_height"], px, py, floor + 0.5 * st["height"], 3.0):
+                    score -= 6.0
+            if score > best:
+                best, direction = score, (ux, uy)
+        return direction
 
     def steer(self, x, y, z, mvx, mvy, m, st):
         W = self.world

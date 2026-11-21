@@ -94,6 +94,13 @@ SPEC += [
     ("laser_dist", 0, 180, 0, "preferred fighting distance while holding a laser; 0 = pref_dist"),
     ("fight_loot", 0, 1, 0, ">= 0.5: while fighting, walk over cubes within 30 m and fetch a better weapon"),
     ("fight_loot_dist", 0, 250, 200, "max distance to fetch a better weapon mid-fight"),
+    ("fight_boost", 0, 1, 0, ">= 0.5: boost while moving on the ground in fight mode above boost_energy"),
+    ("gun_laser_cooldown", 0, 1, 0, ">= 0.5: give the gun the aim while the laser is cooling down"),
+    ("laser_lethal", 0, 1, 0, ">= 0.5: release an aligned partial charge when it can finish the target"),
+    ("gun_slew_s", 0, 0.05, 0, "seconds of torso rotation to credit before the gun fires"),
+    ("finish_drop", 0, 1, 0, ">= 0.5: finish an uncontested supply capture already in progress"),
+    ("score_moves", 0, 1, 0, ">= 0.5: compare nearby fight positions for range, line of sight and exposure"),
+    ("hpd_keep_margin", 0, 0.3, 0, "fractional preference for the current visible HP-distance target"),
 ]
 
 NAMES = [s[0] for s in SPEC]

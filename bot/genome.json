@@ -1,1 +1,18 @@
-{"berserk": 1, "engage_range": 200, "pref_dist": 90, "laser_dist": 110, "tgt_hpd": 1, "fight_loot": 1, "w_laser": 1.0, "w_lightning": 0}
+{
+  "berserk": 1,
+  "engage_range": 200,
+  "pref_dist": 90,
+  "laser_dist": 110,
+  "tgt_hpd": 1,
+  "fight_loot": 1,
+  "w_laser": 1.0,
+  "w_lightning": 0,
+  "fight_boost": 1,
+  "gun_laser_cooldown": 1,
+  "laser_lethal": 1,
+  "gun_slew_s": 0.025,
+  "hpd_keep_margin": 0.10,
+  "finish_drop": 1,
+  "score_moves": 1,
+  "ffa_detect": 1
+}
