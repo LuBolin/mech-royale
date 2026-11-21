@@ -7,6 +7,7 @@ scores on the server disagree with the simulator.
 """
 import random
 
+import params as PR
 from brain import Bot
 from engine import Match
 
@@ -29,6 +30,7 @@ class HouseBot(Bot):
         prm = dict(lead=lead, w_mortar=wp, w_laser=wp, w_lightning=wp, npc_dist=30, crate_dist=30,
                    loot_dist=50, camp=0.0, quiet=0.0, face_sound=1.0, flee_hp=0.2, engage_range=110,
                    survival=0.0)  # keep the calibrated house logic; brain.py's survival layer is ours only
+        prm.update(PR.OFF)
         super().__init__(hello, prm, aim_noise=noise)
         self.shared = shared
 

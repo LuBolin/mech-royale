@@ -51,7 +51,31 @@ SPEC = [
     ("npc_hp", 0.3, 1, 0.8, "min hp fraction to fight drones"),
     ("drop_dist", 0, 300, 120, "max distance to go for a supply drop"),
     ("drop_contest", 0, 80, 40, "skip a drop if a visible mech is this close to its ring"),
+    # competitor-survey features (docs/competitor-survey.md); OFF below restores the pre-survey bot.
+    # Defaults follow the sim A/Bs in runs/ab (2026-11-21): Tier 2 knobs other than fire_early showed no gain.
+    ("sidestep", 0, 1, 1, ">= 0.5: step sideways out of incoming gun rounds"),
+    ("hide", 0, 1, 0, ">= 0.5: after contact breaks, stand still until regen refills hp"),
+    ("hostile_only", 0, 1, 1, ">= 0.5: only target mechs that hit us, aim at us or come close"),
+    ("loot_mem_s", 0, 200, 120, "seconds to remember weapon pickups after they leave view"),
+    ("loot_dist_empty", 0, 250, 160, "max detour to a weapon pickup while slot 1 is empty"),
+    ("finish_hp", 0, 0.5, 0.2, "always fight a target below this hp fraction"),
+    ("stick", 0, 2, 0.5, "target score bonus for keeping the current target"),
+    ("open_boost_s", 0, 10, 4, "boost while roaming for this many seconds after the start"),
+    ("mortar_laser", 0, 1, 1, ">= 0.5: drop the mortar when a laser holder is in sight"),
+    ("ffa_detect", 0, 1, 0, ">= 0.5: detect a free-for-all lobby and switch to the ffa profile"),
+    ("ffa_aggr", 0.3, 1.5, 0.8, "aggression multiplier once a free-for-all is detected"),
+    ("third_party", 0, 1, 0.5, "target score bonus for mechs busy fighting someone else (ffa)"),
+    ("fire_early", 0, 1, 1, ">= 0.5: start the laser charge on the tick the cooldown ends"),
+    ("laser_smart", 0, 1, 0, ">= 0.5: release the laser on a kill, before losing LOS, on predicted aim"),
+    ("ghost_fire", 0, 1, 0, ">= 0.5: fire back at an unseen shooter's estimated position"),
+    ("pincer", 0, 1, 0, ">= 0.5: flee through the largest gap when threats surround us"),
+    ("final_r", 0, 60, 0, "stand on the exact next centre once its radius is at most this"),
 ]
+
+# Knob values that reproduce the pre-survey bot: house bots and A/B baselines use them.
+OFF = {"sidestep": 0, "hide": 1, "hostile_only": 0, "loot_mem_s": 0, "loot_dist_empty": 0, "finish_hp": 0,
+       "stick": 0, "open_boost_s": 0, "mortar_laser": 0, "ffa_detect": 0, "ffa_aggr": 1, "third_party": 0,
+       "fire_early": 0, "laser_smart": 0, "ghost_fire": 0, "pincer": 0, "final_r": 0}
 
 UPGRADES = [
     "plating", "armor", "servos", "capacitor", "reactor", "jets", "nanites", "gyros", "sensors",
