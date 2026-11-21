@@ -95,6 +95,15 @@ Decision: all of Tier 1 is on. The sim's practice mode disputes `hostile`, but j
 
 Decision: only `fire_early` is on by default. The other Tier 2 knobs stay in the genome at off, so a GA can still try them.
 
+A second Tier 2 run used 200 practice and 100 FFA matches, with 15 pre-survey bots as the FFA field. It is the current `runs/ab/tier2.txt`, which replaced the first run's table. It agrees with the first run:
+- fire_early: +0.15 ± 0.07 practice, +0.27 ± 0.16 FFA.
+- ghost_fire: **−0.82 ± 0.33** FFA.
+- laser_smart: +0.04 / +0.07, noise.
+- pincer: +0.02 / −0.12, noise.
+- ffa_detect: +0.01 / +0.02, noise.
+- final_r: exactly 0.
+- All Tier 2: +0.06 / −0.59 ± 0.38.
+
 Other checks:
 - **FFA detector:** at least 2 foreign deaths before 150 s latched in 0 of 64 practice matches and 4 of 4 FFA matches. A single early death misfired in 6 of 64 practice matches, so that rule was dropped.
 - **Latency per tick** (6 practice matches): mean 0.14 ms, p99 1.3 ms, max 2.2 ms. That is unchanged from the pre-survey bot and well under the 50 ms limit.
