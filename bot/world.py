@@ -12,6 +12,7 @@ shortcut: overlapping crowns are merged into one span per 1 m column, and terrai
 nearest vertex, not bilinearly; refine if sight checks disagree with server observations.
 """
 import json
+import hashlib
 import math
 import os
 import tempfile
@@ -33,9 +34,14 @@ def get_world(map_dir):
 
 class World:
     def __init__(self, map_dir, max_slope_deg=50.0):
-        with open(os.path.join(map_dir, "v2", "world.json")) as f:
-            w = json.load(f)
+        with open(os.path.join(map_dir, "v2", "world.json"), "rb") as f:
+            world_bytes = f.read()
+        w = json.loads(world_bytes)
         t = w["terrain"]
+        digest = hashlib.sha256(world_bytes)
+        with open(os.path.join(map_dir, "v2", t["file"]), "rb") as f:
+            digest.update(f.read())
+        self.map_digest = digest.hexdigest()
         self.nx, self.ny, self.x0, self.y0 = t["nx"], t["ny"], t["minX"], t["minY"]
         b = w["bounds"]
         self.bounds = (b["minX"], b["maxX"], b["minY"], b["maxY"])
@@ -44,7 +50,7 @@ class World:
         self.canopy_block_t = r.get("canopyBlockT", 0.25)
         self.max_canopy_m = -math.log(self.canopy_block_t) / self.canopy_density
         names = ("ground", "top", "slab_lo", "slab_hi", "trunk", "crown_lo", "crown_hi", "steep", "tmask")
-        cache = os.path.join(tempfile.gettempdir(), f"mech_grid_v{GRID_VERSION}_{int(max_slope_deg)}.npz")
+        cache = os.path.join(tempfile.gettempdir(), f"mech_grid_v{GRID_VERSION}_{max_slope_deg}_{self.map_digest}.npz")
         try:
             d = np.load(cache)
             g = {k: d[k] for k in names}

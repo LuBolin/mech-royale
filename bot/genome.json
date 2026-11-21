@@ -14,5 +14,6 @@
   "hpd_keep_margin": 0.10,
   "finish_drop": 1,
   "score_moves": 0,
-  "ffa_detect": 1
+  "ffa_detect": 1,
+  "combat_pilot": 1
 }

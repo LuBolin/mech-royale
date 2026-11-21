@@ -5,6 +5,8 @@ import random
 import numpy as np
 
 import params as PR
+from arena_routes import load_routes
+from flight import plan_flight
 from world import get_world
 
 TAU = 2 * math.pi
@@ -41,6 +43,18 @@ class Bot:
         p = PR.defaults()
         p.update(PR.load() if params is None else params)
         self.p = p
+        self.combat_pilot = p["combat_pilot"] >= 0.5
+        self.routes = load_routes(self.world) if self.combat_pilot else None
+        self.route = []
+        self.route_key = None
+        self.route_until = -1
+        self.flight = None
+        self.flight_started = -1
+        self.flight_goal = None
+        self.air_retry = -1
+        self.takeoff_approach = None
+        self.last_contact = None
+        self.heard_sector = None
         self.rng = random.Random(hello.get("seed", 0))
         self.aim_noise = aim_noise
         self.reach = cfg["loot"]["pickup_radius"]
@@ -88,6 +102,7 @@ class Bot:
         energy = me["energy"]
         weapons = me["weapons"]
         kinds = [w["kind"] if w else None for w in weapons]
+        self.takeoff_approach = None
         a = {"tick": obs["tick"]}
 
         mechs = [m for m in obs["mechs"] if m["kind"] == "mech"]
@@ -131,6 +146,15 @@ class Bot:
         for s in obs["sounds"]:
             if s["kind"] in LOUD and s["dist"] != "far":
                 self.sound = (t - s["age"], s["bearing"])
+                if self.routes and (self.heard_sector is None or t-s["age"] > self.heard_sector[0]):
+                    # Anchor the noisy bearing to where it was heard, even as our mech moves.
+                    distance = 35 if s["dist"] == "near" else 100
+                    sector = []
+                    for offset in (-0.18, 0.0, 0.18):
+                        bearing = s["bearing"] + offset
+                        sx, sy = x + distance*math.cos(bearing), y + distance*math.sin(bearing)
+                        sector.append((sx, sy, W.h(sx, sy) + 7))
+                    self.heard_sector = (t-s["age"], sector)
         if obs["offer"]:
             ch = obs["offer"]["choices"]
             a["pick"] = max(range(len(ch)), key=lambda i: p.get("up_" + ch[i]["id"], 0.0))
@@ -156,11 +180,18 @@ class Bot:
         for pk in obs["pickups"]:
             self.loot[pk["id"]] = (pk["kind"], pk["pos"], t)
             seen_ids.add(pk["id"])
-        for pid, (_, (px, py, _), ts) in list(self.loot.items()):
-            if pid not in seen_ids and (t - ts > p["loot_mem_s"] or math.hypot(px - x, py - y) < 40):
-                del self.loot[pid]
+        for pid, (_, (px, py, pz), ts) in list(self.loot.items()):
+            if pid not in seen_ids:
+                nearby = math.hypot(px - x, py - y) < 40
+                # The deck hides its pickups from the mech underneath. Keep their
+                # last sighting while walking out to reach the launch side.
+                missing = nearby and (not self.routes or W.los(x, y, z+st["eye_height"], px, py, pz+0.5))
+                if t - ts > p["loot_mem_s"] or missing:
+                    del self.loot[pid]
 
         def hostile(m):
+            if self.combat_pilot and obs["alive"] == 2:
+                return True
             return not self.on["hostile_only"] or t - self.hostile.get(m["id"], -1e9) < 12 or (
                 self.ffa and t - self.busy.get(m["id"], -1e9) < 2)
 
@@ -189,6 +220,9 @@ class Bot:
             if s < best:
                 best, target = s, m
         self.cur_target = target["id"] if target else None
+        if self.routes and target:
+            tx, ty, tz = target["pos"]
+            self.last_contact = (t, (tx, ty, tz + 4.5 * (1 + 0.05 * target.get("cubes", 0))))
 
         # ---- zone geometry
         zone = obs["zone"]
@@ -291,6 +325,10 @@ class Bot:
                     self.strafe = -self.strafe
                 self.strafe_next = t + p["strafe_period"] * (0.5 + rng.random())
             s = p["strafe"] * self.strafe
+            if self.combat_pilot:
+                if target and "lightning" in target.get("weapons", ()) and "lightning" not in kinds:
+                    radial = min(radial, clamp((d - 60) / 10, -1, 1))
+                s = self.strafe
             mvx, mvy = vx_ * radial - vy_ * s, vy_ * radial + vx_ * s
             if p["score_moves"] >= 0.5 and target is not None and me["grounded"]:
                 mvx, mvy = self.fight_direction(me, target, mechs, pref, zone, (mvx, mvy))
@@ -310,6 +348,8 @@ class Bot:
                             g = (dl, ppos)
                 if g is not None:
                     mvx, mvy = g[1][0] - x, g[1][1] - y
+            if self.combat_pilot and target and threats and weapons[0] and weapons[0]["reload"] > 0.5 and not kinds[1]:
+                mvx, mvy = self.flee_cover(x, y, z, t, threats, nc, nr, margin, st)
         elif mode == "flee":
             if gap_dir is not None:
                 mvx, mvy = gap_dir
@@ -411,6 +451,60 @@ class Bot:
                 else:
                     mvx = mvy = 0.0
 
+        if self.flight is not None and me["grounded"] and t > self.flight_started:
+            # An early collision can land us on a different floor. Re-anchor from measured feet.
+            landed = (math.dist(me["pos"][:2], self.flight_goal[:2]) <= max(2, st["radius"]) and
+                      abs(z-self.flight_goal[2]) <= st["step_up"] + 0.2)
+            self.end_flight(t, landed)
+        if self.routes and self.flight is None and me["grounded"] and mode != "capture":
+            purpose, sources, destination = None, [], home
+            recent_contact = self.last_contact and t - self.last_contact[0] < 2.0
+            reloading = weapons[0] and weapons[0]["reload"] > 0.5 and not kinds[1]
+            if mode != "zone":
+                if mode == "flee" or (mode == "fight" and reloading):
+                    purpose = "shelter"
+                    sources = [(tx, ty, tz+7) for tx, ty, tz, _ in threats]
+                    sources.sort(key=lambda pos: math.hypot(pos[0]-x, pos[1]-y))
+                    sources = sources[:3]
+                    if sources and self.heard_sector and t-self.heard_sector[0] < 1.0:
+                        sx, sy, sz = self.heard_sector[1][1]
+                        heard = math.atan2(sy-y, sx-x)
+                        if all(abs(wrap(heard-math.atan2(ty-y, tx-x))) > 0.45 for tx, ty, _ in sources):
+                            sources.append((sx, sy, sz))
+                elif recent_contact and mode in ("fight", "roam") and hpf > 0.55:
+                    contact = self.last_contact[1]
+                    if not W.los(x, y, z + st["muzzle_height"], *contact):
+                        purpose, sources = "flank", [contact]
+                if not sources and target is None and self.heard_sector and t-self.heard_sector[0] < 1.5:
+                    if mode in ("hide", "flee") or (mode == "roam" and self.goal and self.goal[3] == "home"):
+                        purpose, sources = "shelter", self.heard_sector[1]
+            if purpose is None and self.goal and mode in ("zone", "roam"):
+                destination = self.goal[:3] if self.goal[3] in ("loot", "cube", "drop") else self.goal[:2]
+                dx, dy = destination[0]-x, destination[1]-y
+                dist = math.hypot(dx, dy)
+                elevated = len(destination) == 3 and abs(destination[2]-z) > st["step_up"] + 1
+                if elevated or (dist > 20 and (self.route_key == ("travel", destination) or
+                        not W.clear(x, y, z, dx/dist, dy/dist, min(32, dist), st["step_up"], st["height"]))):
+                    purpose = "travel"
+            if purpose and (purpose == "travel" or sources):
+                circle = (*nc, nr) if dn < nr and nr < cr else (*cc, cr)
+                if purpose == "travel" and goal_z is not None and W.ceiling(x, y, z) < goal_z + st["height"]:
+                    # Walking out from under a deck comes before gaining altitude.
+                    goal_z = None
+                next_move = self.map_move(t, me, purpose, destination, sources, circle)
+                if next_move is not None:
+                    speed = min(1, math.hypot(mvx, mvy)) if purpose == "travel" else 1
+                    if purpose == "travel" and len(destination) == 3 and abs(destination[2]-z) > st["step_up"]+1:
+                        speed = 1
+                    # Follow the approach to the takeoff point instead of jetting at the loot overhead.
+                    goal_z = None
+                    mvx, mvy = next_move[0]*speed, next_move[1]*speed
+                    if purpose != "travel":
+                        mode = self.mode = purpose
+                        boost = purpose == "shelter" and energy > p["boost_energy"] and next_move != (0, 0)
+            else:
+                self.route_key = None
+
         # ---- dodge incoming mortar shells (their path is visible and gravity is known)
         shell = self.shell_threat(obs["projectiles"], x, y, z)
         if shell is not None:
@@ -420,9 +514,12 @@ class Bot:
             boost = energy > 10
             mode = self.mode = "dodge"
         elif self.on["sidestep"]:
-            side = self.bullet_threat(obs["projectiles"], x, y, z, st["height"])
+            side = self.bullet_threat(obs["projectiles"], x, y, z, st["height"],
+                                      me["vel"] if self.combat_pilot else (0, 0, 0))
             if side is not None:
                 mvx, mvy = side
+                if self.combat_pilot:
+                    boost = me["grounded"] and energy > 8
                 mode = self.mode = "dodge"
 
         # ---- navigation
@@ -465,6 +562,10 @@ class Bot:
             tol = math.atan2(2.5 * p["aim_tol"], d)
             fire0 = d < weapons[0]["stats"]["range"] * p["fire_range"] and abs(wrap(yaw - want_yaw)) < tol \
                 and abs(pitch - want_pitch) < tol * 1.5
+        elif mode == "flank" and self.last_contact:
+            tx, ty, tz = self.last_contact[1]
+            want_yaw = math.atan2(ty-y, tx-x)
+            want_pitch = math.atan2(tz-muz, max(1, math.hypot(tx-x, ty-y)))
         elif shoot_obj is not None:
             px, py, pz = shoot_obj["pos"]
             d = math.hypot(px - x, py - y)
@@ -505,6 +606,24 @@ class Bot:
                 and not jump and m_ > 1e-3 and energy > p["boost_energy"]):
             boost = True
 
+        if self.takeoff_approach is not None and mode not in ("dodge", "capture"):
+            mvx, mvy = self.takeoff_approach
+            boost = jump = False
+        if self.flight is not None:
+            # Enemy shells and bullets can interrupt a planned flight exactly as they interrupt a walk.
+            if mode in ("dodge", "capture"):
+                self.end_flight(t, False)
+            else:
+                command = self.flight_command(t, me)
+                if command is not None:
+                    (mvx, mvy), boost, jump = command
+                    self.mode = "jet_route"
+                    self.goal = (*self.flight_goal, "landing")
+                    # Preserve the modeled speed and fuel through touchdown. A new laser
+                    # charge halves travel speed; lightning and jets share energy.
+                    if kinds[1] in ("laser", "lightning"):
+                        fire1 = False
+
         # weapon pickup within reach
         for pk in obs["pickups"]:
             k = pk["kind"]
@@ -535,6 +654,77 @@ class Bot:
         return a
 
     # ------------------------------------------------------------------ helpers
+    def end_flight(self, t, landed):
+        self.flight = None
+        self.route = []
+        self.route_key = None
+        self.route_until = t
+        if not landed:
+            self.air_retry = t + 1.5
+
+    def flight_command(self, t, me):
+        frame = round((t-self.flight_started) * 10)
+        if frame >= len(self.flight.commands):
+            # Contacts and terrain can shift touchdown by a physics step.
+            if t-self.flight_started <= self.flight.airtime + 0.35:
+                return (0, 0), False, False
+            self.end_flight(t, False)
+            return None
+        if frame:
+            expected = self.flight.positions[frame-1]
+            if math.dist(me["pos"], expected) > max(3.0, me["stats"]["radius"]):
+                self.end_flight(t, False)
+                return None
+        return self.flight.commands[frame]
+
+    def map_move(self, t, me, purpose, destination, sources, circle):
+        x, y, z = me["pos"]
+        if purpose == "travel":
+            key = (purpose, destination)
+        else:
+            key = (purpose, tuple((round(tx/16), round(ty/16)) for tx, ty, _ in sources))
+        if key != self.route_key or t >= self.route_until:
+            self.route = self.routes.plan((x, y, z), destination, purpose, sources, circle, me["stats"],
+                                          energy=me["energy"], allow_air=t >= self.air_retry)
+            self.route_key = key
+            self.route_until = t + (3.0 if purpose == "travel" else 1.2)
+        if not self.route:
+            return None
+        self.goal = (*self.route[-1][:3], purpose)
+        while len(self.route) > 1 and not self.route[0].air and math.dist((x,y,z), self.route[0][:3]) < 2:
+            if self.route[1].air:
+                sx, sy, _ = self.route[0][:3]
+                if math.hypot(sx-x, sy-y) > 0.65 or math.hypot(*me["vel"][:2]) > 3.0:
+                    # Brake at the modeled launch point; sprinting past a deck lip
+                    # changes which side of the wall the jump will intersect.
+                    factor = 2.5 / me["stats"]["walk_speed"]
+                    self.takeoff_approach = ((sx-x)*factor, (sy-y)*factor)
+                    return self.takeoff_approach
+            self.route.pop(0)
+        waypoint = self.route[0]
+        px, py, pz = waypoint[:3]
+        if waypoint.air:
+            # The grid uses a nominal launch. Simulate again from the observed position,
+            # speed, energy and actual mech size before committing to a jump.
+            charging = any(w and w.get("charge", 0) > 0 for w in me["weapons"])
+            if not charging:
+                self.flight = plan_flight(self.world, me["pos"], waypoint[:3], me["stats"],
+                                          me["energy"], velocity=me["vel"])
+            if self.flight is None:
+                self.end_flight(t, False)
+                return None
+            self.flight_started = t
+            self.flight_goal = waypoint[:3]
+            return (0, 0)
+        dist = math.hypot(px-x, py-y)
+        if abs(pz-z) > dist + me["stats"]["step_up"]:
+            self.route_until = t
+            return None
+        if dist < 2 or dist > 18:
+            self.route_until = t if purpose == "travel" or dist > 18 else self.route_until
+            return (0, 0) if purpose == "shelter" and dist < 2 else None
+        return (px-x)/dist, (py-y)/dist
+
     def shoot(self, me, target, kinds, weapons, x, y, z, muz, eye):
         p, W = self.p, self.world
         yaw, pitch = me["aim"]
@@ -549,6 +739,25 @@ class Bot:
         gs = gun["stats"]["speed"] if gun else 252.0
         T = dxy / gs
         lx, ly, lz = tx + tvx * T * p["lead"], ty + tvy * T * p["lead"], tcz + tvz * T * p["lead"] * 0.5
+        pilot = p.get("combat_pilot", 0) >= 0.5
+        if pilot:
+            # Movement and torso slew precede discharge in the physics step.
+            dt = 0.05
+            vx, vy, vz = me["vel"]
+            x, y, muz = x + vx * dt, y + vy * dt, muz + vz * dt
+            tx, ty, tz = tx + tvx * dt, ty + tvy * dt, tz + tvz * dt
+            tcz = tz + 4.5 * size
+            dxy = max(0.1, math.hypot(tx - x, ty - y))
+            flight = math.hypot(dxy, tcz - muz) / gs
+            for _ in range(2):
+                lx, ly = tx + tvx * flight, ty + tvy * flight
+                feet = tz + tvz * flight
+                if abs(tvz) > 1 and not target.get("jetting"):
+                    feet -= 0.5 * me["stats"]["gravity"] * flight ** 2
+                floor = W.floor(lx, ly, tz, me["stats"]["step_up"])
+                lz = max(feet, floor) + 4.5 * size if floor <= tz + me["stats"]["step_up"] else feet + 4.5 * size
+                flight = math.dist((lx, ly, lz), (x, y, muz)) / gs
+            tol = math.atan2(2.5 * size * p["aim_tol"], dxy)
         g_yaw = math.atan2(ly - y, lx - x)
         g_pitch = math.atan2(lz - muz, math.hypot(lx - x, ly - y))
         d_yaw = math.atan2(ty - y, tx - x)
@@ -562,15 +771,23 @@ class Bot:
             ms = w1["stats"]
             tube = z + me["stats"]["height"] + 0.5
             th = ballistic(ms["speed"], ms["gravity"], dxy, tz + 1.0 - tube, not vis)
-            if th is not None and 25 < dxy < 240:
+            if th is not None and (ms["splash_radius"] if pilot else 25) < dxy < 240:
                 Tf = dxy / (ms["speed"] * math.cos(th))
                 mx, my = tx + tvx * Tf * p["lead"], ty + tvy * Tf * p["lead"]
                 dm = math.hypot(mx - x, my - y)
-                th2 = ballistic(ms["speed"], ms["gravity"], dm, tz + 1.0 - tube, not vis)
+                impact_z = tz + 1.0
+                if pilot:
+                    floor = W.floor(mx, my, tz, me["stats"]["step_up"])
+                    impact_z = max(floor, tz + tvz * Tf - 0.5 * me["stats"]["gravity"] * Tf**2) + 3 * size
+                th2 = ballistic(ms["speed"], ms["gravity"], dm, impact_z - tube, not vis)
                 if th2 is not None:
                     want = (math.atan2(my - y, mx - x), th2)
                     use = "mortar"
-                    fire1 = abs(wrap(yaw - want[0])) < 0.04 and abs(pitch - want[1]) < 0.03
+                    yaw_tol, pitch_tol = 0.04, 0.03
+                    if pilot:
+                        yaw_tol += me["stats"]["turn_rate"] * dt
+                        pitch_tol += me["stats"]["pitch_rate"] * dt
+                    fire1 = abs(wrap(yaw - want[0])) < yaw_tol and abs(pitch - want[1]) < pitch_tol
         elif k1 == "laser" and dxy < w1["stats"]["range"] and vis:
             want = (d_yaw, d_pitch)
             use = "laser"
@@ -695,7 +912,7 @@ class Bot:
                     break
         return None
 
-    def bullet_threat(self, projectiles, x, y, z, height):
+    def bullet_threat(self, projectiles, x, y, z, height, velocity=(0, 0, 0)):
         """Unit move direction out of the path of a gun round passing within 3.5 m in the next 1.2 s, else None.
         jack (practice board): removing this dodge cost 0.5 points."""
         best = None
@@ -704,6 +921,7 @@ class Bot:
                 continue
             px, py, pz = pr["pos"]
             vx, vy, vz = pr["vel"]
+            vx, vy, vz = vx - velocity[0], vy - velocity[1], vz - velocity[2]
             v2 = vx * vx + vy * vy
             if v2 < 1.0:
                 continue
@@ -772,16 +990,35 @@ class Bot:
         W = self.world
         ux, uy = mvx / m, mvy / m
         su = st["step_up"]
-        if W.clear(x, y, z, ux, uy, 6.0, su):
+        def corridor(dx, dy, distance):
+            if not self.combat_pilot:
+                return W.clear(x, y, z, dx, dy, distance, su)
+            radius = st["radius"]
+            xmin, xmax, ymin, ymax = W.bounds
+            ex, ey = x + dx * distance, y + dy * distance
+            if not (xmin + radius < ex < xmax - radius and ymin + radius < ey < ymax - radius):
+                return False
+            return all(W.clear(x - dy * offset, y + dx * offset, z, dx, dy, distance, su, st["height"])
+                       for offset in (0, radius * 0.85, -radius * 0.85))
+
+        if corridor(ux, uy, 6.0):
             return mvx, mvy, False
+        best, detour = -math.inf, None
         for k in (1, 2, 3, 4, 5):
             for sgn in (self.detour, -self.detour):
                 ang = sgn * k * 0.5236
                 c, s = math.cos(ang), math.sin(ang)
                 rx, ry = ux * c - uy * s, ux * s + uy * c
-                if W.clear(x, y, z, rx, ry, 6.0, su):
-                    self.detour = sgn
-                    return rx * m, ry * m, False
+                if corridor(rx, ry, 6.0):
+                    if not self.combat_pilot:
+                        self.detour = sgn
+                        return rx * m, ry * m, False
+                    score = c + 0.2 * (sgn == self.detour) + 0.7 * corridor(rx, ry, 12)
+                    if score > best:
+                        best, detour = score, (rx, ry, sgn)
+        if detour:
+            rx, ry, self.detour = detour
+            return rx * m, ry * m, False
         return mvx, mvy, True
 
     def flee_cover(self, x, y, z, t, threats, nc, nr, margin, st):
@@ -803,10 +1040,16 @@ class Bot:
         E = np.array([(tx, ty, tz + 8.0) for tx, ty, tz, _ in threats])
         seen = W.sees_many(np.repeat(E, len(P), 0), np.tile(P, (len(E), 1)), 2.0).reshape(len(E), len(P))
         cover = 1.0 - seen.mean(0)
+        if self.combat_pilot:
+            solid_cover = ~W.los_many(np.repeat(E, len(P), 0), np.tile(P, (len(E), 1)), 2.0)
+            cover += 4 * solid_cover.reshape(len(E), len(P)).mean(0)
         best, bdir = -1e9, (math.cos(away), math.sin(away))
         for k, a in enumerate(angs):
             c, s = math.cos(a), math.sin(a)
             sc = math.cos(a - away) + p["cover"] * 1.5 * cover[k]
+            if self.combat_pilot and (W.blocked(*pts[k], z, st["height"], su)
+                                      or not W.clear(x, y, z, c, s, 18.0, su, st["height"])):
+                sc -= 5.0
             if math.hypot(pts[k][0] - nc[0], pts[k][1] - nc[1]) > nr - margin:
                 sc -= 1.0
             if not W.clear(x, y, z, c, s, 6.0, su):

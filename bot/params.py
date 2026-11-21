@@ -101,6 +101,7 @@ SPEC += [
     ("finish_drop", 0, 1, 0, ">= 0.5: finish an uncontested supply capture already in progress"),
     ("score_moves", 0, 1, 0, ">= 0.5: compare nearby fight positions for range, line of sight and exposure"),
     ("hpd_keep_margin", 0, 0.3, 0, "fractional preference for the current visible HP-distance target"),
+    ("combat_pilot", 0, 1, 0, "enable predictive aim, body clearance and combat movement"),
 ]
 
 NAMES = [s[0] for s in SPEC]
