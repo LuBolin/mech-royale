@@ -72,10 +72,25 @@ class ScenarioTests(unittest.TestCase):
         action = dict(move=[.3, -.7], boost=True, jump=True, fire=[True, True],
                       aim=[1.2, .2], reload=True, tick=12)
         with patch.object(Match, "_apply", autospec=True) as apply:
-            for trial.weapon in WEAPONS:
+            for weapon in WEAPONS:
+                trial.weapons_by_slot = (weapon, weapon)
                 trial._apply(defender, action)
                 apply.assert_called_with(trial, defender, dict(action, fire=[False, False]))
                 self.assertEqual(action["fire"], [True, True])
+
+    def test_mixed_duel_uses_each_pilots_weapon(self):
+        from unittest.mock import patch
+        from combat_trials import Trial, Match
+
+        trial = Trial.__new__(Trial)
+        trial.duel, trial.aim, trial.frozen = True, False, False
+        trial.weapons_by_slot = ("lightning", "gun")
+        action = dict(fire=[True, True])
+        with patch.object(Match, "_apply", autospec=True) as apply:
+            for slot, expected in enumerate(([False, True], [True, True])):
+                pilot = SimpleNamespace(id=slot)
+                trial._apply(pilot, action)
+                apply.assert_called_with(trial, pilot, dict(fire=expected))
 
     def test_all_weapons_have_paired_dodges_and_a_duel_at_each_range(self):
         from combat_trials import cases_for_seed

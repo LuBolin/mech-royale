@@ -53,10 +53,86 @@ class Routes:
         row, col = divmod(node % self.layer_size, self.width)
         return self.world.x0 + STEP * col, self.world.y0 + STEP * row
 
-    def plan(self, pos, goal, purpose, threats, circle, stats, energy=0, allow_air=True):
+    def plan(self, pos, goal, purpose, threats, circle, stats, energy=0, allow_air=True,
+             travel_budget=math.inf):
+        direct = self._search(pos, goal, purpose, threats, circle, stats, energy, allow_air)
+        if purpose != "travel" or not threats or len(direct) < 2:
+            return direct
+        # Both alternatives must make comparable progress, even when the first A*
+        # search stopped at its node budget and returned only part of a long route.
+        cut = min(12, len(direct))
+        checkpoint = direct[cut-1][:3]
+        remaining = math.dist(checkpoint[:2], goal[:2]) / stats["walk_speed"]
+        time_left = travel_budget - remaining
+        if time_left <= math.dist(pos[:2], checkpoint[:2]) / stats["walk_speed"] + 0.5:
+            return direct
+        eyes = np.asarray(threats[:3], dtype=float)
+
+        def measure(path):
+            samples, duration = [], []
+            previous = pos
+            for step in path:
+                if step.air:
+                    a, b = self.node_at(previous), self.node_at(step)
+                    seconds = next((sec+0.4 for dest, sec, _ in self.flights.get(a, ()) if dest == b), None)
+                else:
+                    seconds = None
+                if seconds is None:
+                    seconds = math.dist(previous[:3], step[:3]) / stats["walk_speed"]
+                samples.append(((previous[0]+step.x)/2, (previous[1]+step.y)/2,
+                                (previous[2]+step.z)/2+stats["height"]*0.65))
+                duration.append(seconds)
+                previous = step
+            B = np.asarray(samples)
+            seen = np.zeros(len(B))
+            for eye in eyes:
+                seen += self.world.los_many(np.broadcast_to(eye, B.shape), B, 2.0)
+            return sum(duration), float(np.dot(seen, duration))
+
+        direct_time, direct_exposure = measure(direct[:cut])
+        if direct_exposure < 0.4 or direct_time + 0.5 >= time_left:
+            return direct
+
+        @lru_cache(maxsize=256)
+        def exposed(tile_x, tile_y, height_band):
+            # Estimate search-edge exposure once per 8 m tile and floor. Use exact
+            # waypoint heights and shot lines to compare the resulting paths above.
+            wx, wy = self.world.x0 + tile_x*8, self.world.y0 + tile_y*8
+            wz = height_band*3.0 + stats["height"]*0.65
+            return sum(self.world.los(wx, wy, wz, *eye, 4.0) for eye in threats[:3])
+
+        def penalty(node, xy):
+            return 1.8 * exposed(round((xy[0]-self.world.x0)/8), round((xy[1]-self.world.y0)/8),
+                                 round(self.heights[node]/3))
+
+        alternate = self._search(pos, checkpoint, "travel", (), circle, stats, energy, allow_air, penalty)
+        if not alternate or alternate[-1][:3] != checkpoint:
+            return direct
+        alt_time, alt_exposure = measure(alternate)
+        if (alt_time <= time_left and alt_exposure + 0.15 < direct_exposure and
+                alt_time + 1.8*alt_exposure < direct_time + 1.8*direct_exposure):
+            return alternate + direct[cut:]
+        return direct
+
+    def node_at(self, pos):
+        col = round((pos[0]-self.world.x0)/STEP)
+        row = round((pos[1]-self.world.y0)/STEP)
+        node = row*self.width + col
+        if not 0 <= node < self.layer_size:
+            return -1
+        upper = node+self.layer_size
+        return min((node, upper), key=lambda n: abs(self.heights[n]-pos[2]))
+
+    def _search(self, pos, goal, purpose, threats, circle, stats, energy, allow_air, penalty=None):
         """Bounded A* for travel, or a local walking-distance search for shelter and firing angles."""
         x, y, z = pos
         w = self.world
+        opportunity = purpose == "opportunity"
+        if opportunity:
+            if len(threats) < 2:
+                return []
+            # A curved jet crossing cannot be screened using its ground waypoints.
+            allow_air = False
         col, row = round((x - w.x0) / STEP), round((y - w.y0) / STEP)
         anchors = []
         for dx, dy in ((0, 0), *DIRECTIONS):
@@ -114,7 +190,9 @@ class Routes:
         spots = []
         cx, cy, radius = circle
         start_ring = math.hypot(x-cx, y-cy)
-        while queue and len(costs) < (1600 if travel else 430):
+        # The screened alternative only reaches a checkpoint 12 waypoints ahead. A lower
+        # cap bounds the second search of one decision; plan() keeps the direct route if it runs out.
+        while queue and len(costs) < (900 if penalty else 1600 if travel else 430):
             _, cost, state = heapq.heappop(queue)
             n, fuel = state
             if cost != costs[state]:
@@ -139,8 +217,7 @@ class Routes:
                     angle = math.atan2(py-ty, px-tx) - math.atan2(y-ty, x-tx)
                     lateral = abs(math.sin(angle)) * math.hypot(x-tx, y-ty)
                     if lateral > 8 and math.hypot(px-tx, py-ty) >= min(18, math.hypot(x-tx, y-ty)):
-                        elevation = max(-4, min(6, self.heights[n]-z))
-                        spots.append((cost - min(lateral, 35) * 0.8 - min(mask.bit_count(), 3) - elevation, state))
+                        spots.append((cost - min(lateral, 35) * 0.8 - min(mask.bit_count(), 3), state))
 
             neighbors = []
             for bit, (offset, length) in enumerate(self.edges):
@@ -163,6 +240,10 @@ class Routes:
                 dx, dy = self.point(dest)
                 if math.hypot(dx-cx, dy-cy) > max(radius, start_ring) + 1:
                     continue
+                if penalty is not None:
+                    new += edge_cost * penalty(dest, (dx, dy))
+                    if new >= costs.get(child, math.inf):
+                        continue
                 alternatives = budgets.get(dest)
                 if alternatives is None:
                     budgets[dest] = {fuel_left: new}
@@ -173,25 +254,62 @@ class Routes:
                 costs[child], parent[child] = new, (state, airborne)
                 heapq.heappush(queue, (new + (remaining(dest) if travel else 0), new, child))
 
+        def path_to(state):
+            path = []
+            while True:
+                n = state[0]
+                edge = parent[state]
+                path.append(Waypoint(*self.point(n), self.heights[n], edge[1] if edge else False))
+                if edge is None:
+                    return path[::-1]
+                state = edge[0]
+
         if not travel:
-            for _, state in heapq.nsmallest(20, spots):
+            best_score = math.inf
+            best = None
+            # The targets of a flank are specified at centre mass. Test return fire
+            # in the other direction, from their gun height to our exposed body.
+            enemy_muzzles = [(tx,ty,tz + 2.5) for tx,ty,tz in threats]
+            for base_score, state in heapq.nsmallest(20, spots):
+                if base_score >= best_score:
+                    break
                 n = state[0]
                 px, py = self.point(n)
                 height = self.heights[n] + (stats["height"] * 0.85 if purpose == "shelter" else stats["muzzle_height"])
-                visible = [w.los(px, py, height, tx, ty, tz, 1.5) for tx, ty, tz in threats]
-                if (purpose == "shelter" and not any(visible)) or (purpose == "flank" and visible[0]):
-                    best = state
-                    break
-            else:
+                if purpose == "shelter":
+                    if not any(w.los(px, py, height, *eye, 1.5) for eye in threats):
+                        best = state
+                        break
+                    continue
+                if not w.los(px, py, height, *threats[0], 1.5):
+                    continue
+                chest = self.heights[n] + stats["height"]*0.65
+                incoming = [w.los(px, py, chest, *eye, 1.5) for eye in enemy_muzzles]
+                if opportunity and any(incoming[1:]):
+                    continue
+                score = base_score + 6*sum(incoming)
+                if score >= best_score:
+                    continue
+                if opportunity:
+                    path = path_to(state)
+                    samples = [pos]
+                    for waypoint in path:
+                        a = samples[-1]
+                        count = max(1, math.ceil(math.dist(a, waypoint[:3])/1.5))
+                        samples.extend(tuple(a[k]+(waypoint[k]-a[k])*i/count for k in range(3))
+                                       for i in range(1, count+1))
+                    body = np.asarray(samples, dtype=float)
+                    body[:,2] += stats["height"]*0.65
+                    exposed = np.zeros(len(body), dtype=int)
+                    for eye in enemy_muzzles:
+                        exposed += w.los_many(np.broadcast_to(eye, body.shape), body, 1.5)
+                    if np.any(exposed > 1):
+                        continue
+                    score += 0.6 * np.count_nonzero(exposed)
+                if score < best_score:
+                    best_score, best = score, state
+            if best is None:
                 return []
         elif best == initial:
             return []
-        path = []
-        while True:
-            n = best[0]
-            edge = parent[best]
-            path.append(Waypoint(*self.point(n), self.heights[n], edge[1] if edge else False))
-            if edge is None:
-                break
-            best = edge[0]
-        return path[::-1]
+        return path_to(best)

@@ -96,6 +96,9 @@ class Trial(Match):
     damage = received = visible = 0.0
     first = None
     travel = air_time = jet_time = 0.0
+    lightning_slot = None
+    lightning_range_s = closing_damage = 0.0
+    first_in_range = None
 
     def decide(self):
         super().decide()
@@ -114,17 +117,31 @@ class Trial(Match):
         self.jet_time += DT * target.jetting
 
     def _weapons(self):
+        if self.lightning_slot is not None:
+            carrier, rival = self.mechs[self.lightning_slot], self.mechs[1-self.lightning_slot]
+            dx, dy, dz = self._dir(carrier)
+            muzzle = carrier.stats["muzzle_height"]
+            barrel = self._barrel_offset(carrier, muzzle, dx, dy, dz)
+            distance = math.dist((carrier.x + dx * barrel, carrier.y + dy * barrel, carrier.z + muzzle + dz * barrel),
+                                 (rival.x, rival.y, rival.z + rival.h * 0.5))
+            if distance <= carrier.wst["lightning"]["range"]:
+                self.lightning_range_s += DT
+                if self.first_in_range is None:
+                    self.first_in_range = self.t
         before = len(self.sounds)
         super()._weapons()
         for kind, _, _, owner, _ in self.sounds[before:]:
             if kind in WEAPONS:
-                if kind != self.weapon or (owner == 1 and not self.duel):
+                if kind != self.weapons_by_slot[owner] or (owner == 1 and not self.duel):
                     raise RuntimeError(f"Unexpected discharge by bot {owner}: {kind}")
                 self.shots += int(owner == 0)
 
     def _damage(self, tgt, amt, att, weapon, src, **kwargs):
         hp = tgt.hp
         super()._damage(tgt, amt, att, weapon, src, **kwargs)
+        if self.lightning_slot is not None and self.first_in_range is None and tgt.hp < hp:
+            if tgt is self.mechs[self.lightning_slot] and att is self.mechs[1-self.lightning_slot]:
+                self.closing_damage += hp - max(0, tgt.hp)
         if tgt is self.mechs[0] and att is self.mechs[1] and tgt.hp < hp:
             self.received += hp - max(0, tgt.hp)
         if tgt is self.mechs[1] and att is self.mechs[0] and tgt.hp < hp:
@@ -157,7 +174,7 @@ class Trial(Match):
         if m.id == 1 and not self.duel:
             # The real pilot has already chosen this action. Preserve every other command.
             action = dict(action, fire=[False, False])
-        elif self.weapon != "gun":
+        elif self.weapons_by_slot[m.id] != "gun":
             action = dict(action, fire=[False, (action.get("fire") or [False, False])[1]])
         super()._apply(m, action)
 
@@ -195,8 +212,11 @@ def lane(geometry, seed, distance, cover, radius, height):
     raise RuntimeError(f"No suitable lane for {distance} m, seed {seed}, cover={cover}")
 
 
-def trial(cfg, arena, executable, seed, weapon, distance, setup, population, movement, gallery=None):
+def trial(cfg, arena, executable, seed, weapon, distance, setup, population, movement, gallery=None,
+          *, opponent_weapon=None):
     aim = setup == "aim"
+    if opponent_weapon is not None and (setup != "duel" or opponent_weapon not in WEAPONS):
+        raise ValueError("opponent_weapon requires a duel and a valid weapon")
     with ExitStack() as stack:
         def reference(hello):
             return Reference(executable, hello, stack)
@@ -209,16 +229,19 @@ def trial(cfg, arena, executable, seed, weapon, distance, setup, population, mov
         game = Trial(cfg, seed, factories, map_dir=str(arena))
         game.aim, game.frozen, game.population = aim, movement == "frozen", population
         game.duel = setup == "duel"
-        game.weapon = weapon
+        game.weapons_by_slot = (weapon, opponent_weapon or weapon)
+        if game.duel and game.weapons_by_slot.count("lightning") == 1:
+            game.lightning_slot = game.weapons_by_slot.index("lightning")
         shooter, defender = game.mechs
         x, y = lane(game.G, seed, distance, setup == "cover", shooter.r, shooter.h)
         for m, px, yaw in [(shooter, x, 0), (defender, x + distance, math.pi)]:
             m.x, m.y, m.z = px, y, game.G.ground(px, y)
             m.yaw = m.cyaw = yaw
-        if weapon != "gun":
-            armed_pilots = (shooter, defender) if game.duel else (shooter,)
-            for pilot in armed_pilots:
-                pilot.slots[1] = dict(pilot.slots[0], kind=weapon)
+        armed_pilots = (shooter, defender) if game.duel else (shooter,)
+        for pilot in armed_pilots:
+            kind = game.weapons_by_slot[pilot.id]
+            if kind != "gun":
+                pilot.slots[1] = dict(pilot.slots[0], kind=kind)
                 if not aim:
                     pilot.slots[0] = None
         limit = 15 if aim else 60
@@ -243,6 +266,10 @@ def trial(cfg, arena, executable, seed, weapon, distance, setup, population, mov
                     damage_per_s=round(game.damage / game.t, 2), visible_s=round(game.visible, 2),
                     first_hit_s=game.first if game.first is None else round(game.first, 2),
                     in_flight=sum(p.owner is shooter for p in game.projs))
+        if opponent_weapon is not None:
+            row.update(opponent_weapon=opponent_weapon, lightning_range_s=round(game.lightning_range_s, 2),
+                       first_in_range_s=round(game.first_in_range, 2) if game.first_in_range is not None else None,
+                       lightning_closing_damage=round(game.closing_damage, 2) if game.lightning_slot is not None else None)
         if gallery:
             gallery.save(row, recording, slot, cfg)
         return row
@@ -298,6 +325,9 @@ def main():
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--gallery", type=Path, help="Write the interactive case gallery here")
+    parser.add_argument("--weapon-swap", action="store_true",
+                        help="Only run gun versus lightning, then swap weapons on the same 65 m lane")
+    parser.add_argument("--seeds", nargs="+", type=int, default=(41, 42, 43))
     args = parser.parse_args()
     kit = args.kit.resolve()
     with gzip.open(kit / "check/stream.jsonl.gz", "rt") as stream:
@@ -313,10 +343,15 @@ def main():
         from combat_gallery import Gallery
         gallery = Gallery(args.gallery, kit / "arena")
     rows = []
-    for seed in (41, 42, 43):
-        for weapon, distance, setup, population, movement in cases_for_seed():
-            rows.append(trial(cfg, kit / "arena", args.reference.resolve(), seed, weapon, distance,
-                              setup, population, movement, gallery))
+    for seed in args.seeds:
+        if args.weapon_swap:
+            for weapon, opponent in (("gun", "lightning"), ("lightning", "gun")):
+                rows.append(trial(cfg, kit / "arena", args.reference.resolve(), seed, weapon, 65, "duel", 2,
+                                  "both", gallery, opponent_weapon=opponent))
+        else:
+            for weapon, distance, setup, population, movement in cases_for_seed():
+                rows.append(trial(cfg, kit / "arena", args.reference.resolve(), seed, weapon, distance,
+                                  setup, population, movement, gallery))
         print(f"Finished seed {seed}", flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w", newline="") as f:
