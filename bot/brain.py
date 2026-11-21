@@ -55,6 +55,7 @@ class Bot:
         self.scan = 0.0
         self.goal_hint = None  # (x, y) set by subclasses (house bots hunting)
         self.mode = "roam"
+        self.goal = None  # (x, y, z, kind) the bot is walking to this tick; read by sim/viewer.py only
         # Survival logic (threat list, unseen-fire response, hide-and-heal). House bots switch it off so the
         # simulator's opponents keep the logic that was calibrated against real practice scores.
         self.survival = p.get("survival", 1.0) >= 0.5
@@ -263,7 +264,9 @@ class Bot:
         boost = jump = False
         shoot_obj = None
         goal_z = None
+        self.goal = None
         if mode == "zone":
+            self.goal = (home[0], home[1], z, "zone")
             mvx, mvy = home[0] - x, home[1] - y
             boost = (not me["in_zone"] or tts < need) and energy > p["boost_energy"] * 0.5
         elif mode == "fight":
@@ -363,6 +366,7 @@ class Bot:
             if goal is None:
                 goal, gkind = (home[0], home[1], z), "home"
             gx, gy, gz = goal
+            self.goal = (gx, gy, gz, gkind)
             d = math.hypot(gx - x, gy - y)
             if gkind in ("crate", "npc"):
                 shoot_obj = gobj

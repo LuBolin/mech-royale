@@ -6,7 +6,7 @@
 <title>Mech Replay</title>
 <style>
   :root { --bg:#0e1116; --panel:#161b22; --line:#2a313c; --text:#d7dde5; --dim:#8a94a3; --ours:#ffd23f;
-          --easy:#5fbf6a; --medium:#4aa3ff; --hard:#ff9a3c; --expert:#ff5a5a; --rival:#b48cff; }
+          --easy:#5fbf6a; --medium:#4aa3ff; --hard:#ff9a3c; --expert:#ff5a5a; --rival:#b48cff; --goal:#35e0ff; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:13px/1.4 system-ui, sans-serif; }
   header { display:flex; gap:16px; align-items:baseline; padding:10px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
@@ -14,16 +14,27 @@
   header .meta { color:var(--dim); }
   .tabs button { background:none; border:1px solid var(--line); color:var(--text); padding:4px 10px; border-radius:6px; cursor:pointer; }
   .tabs button[aria-selected=true] { background:var(--panel); border-color:var(--dim); }
-  main { display:grid; grid-template-columns:1fr 290px; gap:0; height:calc(100vh - 92px); }
+  main { display:grid; grid-template-columns:1fr 300px; gap:0; height:calc(100vh - 92px); }
   #mapwrap { position:relative; overflow:hidden; }
   canvas#map { width:100%; height:100%; display:block; cursor:grab; }
+  #gl { position:absolute; inset:0; display:none; cursor:grab; }
+  #gl canvas { display:block; width:100%; height:100%; }
+  #hud { position:absolute; left:10px; top:10px; max-width:calc(100% - 20px); background:#0e1116d9; border:1px solid var(--line); border-radius:6px; padding:5px 10px; pointer-events:none; }
+  #hud b { color:var(--ours); }
+  #hud i { font-style:normal; color:var(--goal); }
+  #camhelp { position:absolute; left:10px; bottom:10px; color:var(--dim); background:#0e1116d9; border-radius:6px; padding:4px 10px; pointer-events:none; display:none; }
   aside { border-left:1px solid var(--line); padding:12px; overflow:auto; background:var(--panel); }
   aside h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:14px 0 6px; }
-  .stat { display:flex; justify-content:space-between; padding:2px 0; }
+  aside h2:first-child { margin-top:0; }
+  .stat { display:flex; justify-content:space-between; gap:10px; padding:2px 0; }
+  .stat b { text-align:right; }
   .bar { height:6px; background:#2a313c; border-radius:3px; overflow:hidden; margin:2px 0 6px; }
   .bar > i { display:block; height:100%; background:var(--ours); }
-  #feed div { padding:2px 0; border-bottom:1px solid #20262f; color:var(--dim); }
-  #feed b { color:var(--text); font-weight:600; }
+  #feed div, #log div { padding:2px 0; border-bottom:1px solid #20262f; color:var(--dim); }
+  #feed b, #log b { color:var(--text); font-weight:600; }
+  #log div { cursor:pointer; }
+  #log div:hover { background:#20262f; }
+  .hint { color:var(--dim); margin:8px 0 0; }
   .legend span { display:inline-flex; align-items:center; gap:5px; margin:2px 10px 2px 0; }
   .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
   footer { display:flex; gap:10px; align-items:center; padding:8px 16px; border-top:1px solid var(--line); height:46px; }
@@ -42,22 +53,41 @@
   <h1>Mech Royale replay</h1>
   <span class="meta" id="meta"></span>
   <span class="tabs" role="tablist">
-    <button role="tab" aria-selected="true" id="tabReplay">Replay</button>
+    <button role="tab" aria-selected="false" id="tab3d">3D</button>
+    <button role="tab" aria-selected="true" id="tabReplay">Map</button>
     <button role="tab" aria-selected="false" id="tabCharts">Training scores</button>
   </span>
 </header>
 <main id="replay">
-  <div id="mapwrap"><canvas id="map" aria-label="Top-down match replay"></canvas></div>
+  <div id="mapwrap">
+    <canvas id="map" aria-label="Top-down match replay"></canvas>
+    <div id="gl" aria-label="3D match replay"></div>
+    <div id="hud"></div>
+    <div id="camhelp"></div>
+  </div>
   <aside>
-    <h2>Our bot</h2>
+    <h2 id="who">Our bot</h2>
     <div class="stat"><span>Time</span><b id="time"></b></div>
     <div class="stat"><span>Mechs alive</span><b id="alive"></b></div>
     <div class="stat"><span>HP</span><b id="hp"></b></div>
     <div class="bar"><i id="hpbar"></i></div>
     <div class="stat"><span>Mode</span><b id="mode"></b></div>
+    <div class="stat"><span>Target</span><b id="target"></b></div>
+    <div class="stat"><span title="Angle between the barrel and the straight line to the target. Lead and mortar arcs make a few degrees normal.">Aim off target</span><b id="aimoff"></b></div>
+    <div class="stat"><span title="Feet above the terrain under the mech; a roof counts as height">Above ground</span><b id="height"></b></div>
     <div class="stat"><span>Weapons</span><b id="weap"></b></div>
     <div class="stat"><span>Cubes</span><b id="cubes"></b></div>
+    <div class="stat"><span title="Shots fired, and damage events it caused (splash and chains count once per victim)">Shots / hits</span><b id="shots"></b></div>
+    <div class="stat"><span>Damage dealt / taken</span><b id="dmg"></b></div>
+    <h2>Our bot's intent</h2>
+    <div class="stat"><span>Decision</span><b id="iMode"></b></div>
+    <div class="stat"><span>Walking to</span><b id="iGoal"></b></div>
+    <div class="stat"><span>Legs</span><b id="iMove"></b></div>
+    <div class="stat"><span>Actions</span><b id="iAct"></b></div>
     <div class="stat"><span>Final place</span><b id="final"></b></div>
+    <p class="hint">Click a mech to inspect it, or press [ and ]. ←/→ step one frame, Space plays.</p>
+    <h2>Decision log</h2>
+    <div id="log"></div>
     <h2>Legend</h2>
     <div class="legend" id="legend"></div>
     <h2>Deaths</h2>
@@ -66,15 +96,19 @@
 </main>
 <footer id="controls">
   <button id="play" aria-label="Play or pause">Play</button>
-  <select id="speed" aria-label="Playback speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="10">10×</option><option value="25">25×</option></select>
+  <button id="prev" aria-label="Step back one frame" title="Left arrow (Shift: 10 frames)">◀</button>
+  <button id="next" aria-label="Step forward one frame" title="Right arrow (Shift: 10 frames)">▶</button>
+  <select id="speed" aria-label="Playback speed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1">1×</option><option value="4" selected>4×</option><option value="10">10×</option><option value="25">25×</option></select>
   <input type="range" id="scrub" min="0" value="0" aria-label="Match time">
-  <label><input type="checkbox" id="follow"> Follow our bot</label>
-  <label><input type="checkbox" id="trails" checked> Trails</label>
+  <select id="cam" aria-label="Camera" style="display:none"><option value="chase">Chase camera</option><option value="first">Bot's eyes</option><option value="fly">Free fly</option></select>
+  <span id="opt2d"><label><input type="checkbox" id="follow"> Follow selected</label>
+  <label><input type="checkbox" id="trails" checked> Trails</label></span>
 </footer>
 <section id="charts">
   <p class="note">Each generation scores 16 candidates. <b>Fitness</b> = 0.5 × FFA points + 0.5 × practice points (0–15). The <b>benchmark</b> plays the distribution mean on fixed seeds: 32 practice matches vs house bots, and 16 FFA matches vs 15 default bots. It's the number to compare across runs. Simulated scores; the real server's house bots differ.</p>
   <div id="chartList"></div>
 </section>
+<script>/*THREE*/</script>
 <script>
 const D = /*DATA*/null;
 const $ = id => document.getElementById(id);
@@ -82,12 +116,73 @@ const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).
 const COL = { ours: css('--ours'), easy: css('--easy'), medium: css('--medium'), hard: css('--hard'), expert: css('--expert'), rival: css('--rival') };
 const WN = { g: 'gun', m: 'mortar', l: 'laser', t: 'lightning' };
 const name = i => i === D.slot ? 'OURS' : `${D.labels[i]} #${i}`;
+const tname = id => id < 0 ? '—' : id < 16 ? name(id) : id < 1000 ? 'drone' : 'crate';
+const fmt = t => `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+const wrapA = a => Math.atan2(Math.sin(a), Math.cos(a));
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const countLE = (arr, t) => { let lo = 0, hi = arr.length; while (lo < hi) { const mid = (lo + hi) >> 1; arr[mid] <= t ? lo = mid + 1 : hi = mid; } return lo; };
+const F = D.frames, MC = D.mech, HT = D.hits.map(h => h[0]);
+// mech row: 0 x, 1 y, 2 yaw, 3 hp fraction, 4 alive, 5 mode, 6 weapons, 7 cubes, 8 target id, 9 z, 10 pitch, 11 bits (1 jetting, 2 airborne)
+// frame.o (our bot): [goal [x, y, z, kind] or null, move x, move y, commanded yaw, pitch, bits (1 fire 1, 2 fire 2, 4 boost, 8 jump, 16 take)]
+let fi = 0, playing = false, last = 0, acc = 0, sel = D.slot, mode3d = false;
 $('meta').textContent = `${D.mode} · seed ${D.seed} · genome ${D.genome} · our place ${D.place} (${D.points} pts)`;
 $('final').textContent = `${D.place} (${D.points} pts)`;
 $('legend').innerHTML = [...new Set(D.labels)].map(l => `<span><i class="dot" style="background:${COL[l]}"></i>${l}</span>`).join('')
-  + '<span><i class="dot" style="background:#e04b4b"></i>zone</span><span><i class="dot" style="background:#c9a227"></i>drop</span><span><i class="dot" style="background:#9aa"></i>drone</span>';
+  + '<span><i class="dot" style="background:#e04b4b"></i>zone</span><span><i class="dot" style="background:#c9a227"></i>drop</span><span><i class="dot" style="background:#9aa"></i>drone</span>'
+  + `<span><i class="dot" style="background:${css('--goal')}"></i>our goal</span><span><i class="dot" style="background:#ffe066"></i>aim</span><span><i class="dot" style="background:#fff"></i>line to target</span>`;
 
-// ---------- map
+// ---------- our bot's intent
+function intent(f) {
+  const u = f.m[D.slot], it = f.o;
+  if (!u[4] || !it) return null;
+  const g = it[0], rel = wrapA(Math.atan2(it[2], it[1]) - u[2]), still = Math.hypot(it[1], it[2]) < 0.05;
+  return { mode: D.modes[u[5]], kind: g ? g[3] : '', goal: g ? `${g[3]}, ${Math.hypot(g[0] - u[0], g[1] - u[1]).toFixed(0)} m away` : '—', target: tname(u[8]),
+    move: still ? 'standing still' : Math.abs(rel) < 0.8 ? 'forward' : Math.abs(rel) > 2.35 ? 'backward' : rel > 0 ? 'strafe left' : 'strafe right',
+    acts: [it[5] & 4 ? (u[11] & 2 ? 'JET' : 'BOOST') : '', it[5] & 8 ? 'JUMP' : '', it[5] & 1 ? 'FIRE 1' : '', it[5] & 2 ? 'FIRE 2' : '', it[5] & 16 ? 'TAKE' : ''].filter(Boolean) };
+}
+const LOG = [];  // [frame, t, text] each time our bot's mode, goal kind or target changes
+{ let prev = ''; F.forEach((f, k) => { const it = intent(f); if (!it) return;
+  const txt = it.mode + (it.kind ? ' → ' + it.kind : '') + (it.target !== '—' ? ' · target ' + it.target : '');
+  if (txt !== prev) { prev = txt; LOG.push([k, f.t, txt]); } }); }
+let logN = -1;
+function aimOff(f, i) {  // degrees between the barrel and the line to the target's centre, and the range
+  const m = f.m[i], t = f.m[m[8]];
+  if (!m[4] || !t || !t[4]) return null;
+  const dx = t[0] - m[0], dy = t[1] - m[1], dz = t[9] + MC.height / 2 - m[9] - MC.muzzle_height, d = Math.hypot(dx, dy, dz) || 1, cp = Math.cos(m[10]);
+  return [Math.acos(clamp((cp * Math.cos(m[2]) * dx + cp * Math.sin(m[2]) * dy + Math.sin(m[10]) * dz) / d, -1, 1)) * 180 / Math.PI, d];
+}
+function panel() {
+  const f = F[fi], o = f.m[sel], ao = aimOff(f, sel);
+  $('who').textContent = sel === D.slot ? 'Our bot' : name(sel);
+  $('time').textContent = fmt(f.t);
+  $('alive').textContent = f.m.filter(m => m[4]).length;
+  $('hp').textContent = o[4] ? `${Math.round(o[3] * 100)}%` : 'dead';
+  $('hpbar').style.width = `${o[4] ? o[3] * 100 : 0}%`;
+  $('mode').textContent = o[4] ? D.modes[o[5]] : '—';
+  $('target').textContent = o[4] ? tname(o[8]) : '—';
+  $('aimoff').textContent = ao ? `${ao[0].toFixed(1)}° at ${ao[1].toFixed(0)} m` : '—';
+  $('height').textContent = o[4] ? `${Math.max(0, o[9] - groundZ(o[0], o[1])).toFixed(0)} m${o[11] & 1 ? ' · jetting' : o[11] & 2 ? ' · airborne' : ''}` : '—';
+  $('weap').textContent = o[6].split('').map(c => WN[c]).join(' + ');
+  $('cubes').textContent = o[7];
+  let hl = 0, dd = 0, dk = 0;
+  for (const h of D.hits) { if (h[0] > f.t) break; if (h[1] === sel) { hl++; dd += h[3]; } if (h[2] === sel) dk += h[3]; }
+  $('shots').textContent = `${countLE(D.shots[sel], f.t)} / ${hl}`;
+  $('dmg').textContent = `${dd} / ${dk}`;
+  const it = intent(f);
+  $('iMode').textContent = it ? it.mode + (it.target !== '—' ? ` (${it.target})` : '') : 'dead';
+  $('iGoal').textContent = it ? it.goal : '—';
+  $('iMove').textContent = it ? it.move : '—';
+  $('iAct').textContent = it ? it.acts.join(' · ') || 'none' : '—';
+  $('hud').innerHTML = it ? `<b>OURS</b> ${it.mode}${it.kind ? ` → <i>${it.kind}</i>` : ''}${it.target !== '—' ? ` · target ${it.target}` : ''} · ${it.move}${it.acts.length ? ' · ' + it.acts.join(' · ') : ''}` : '<b>OURS</b> dead';
+  const n = LOG.filter(e => e[0] <= fi).length;
+  if (n !== logN) { logN = n; $('log').innerHTML = LOG.slice(Math.max(0, n - 40), n).reverse().map(e => `<div data-k="${e[0]}">${fmt(e[1])} · <b>${e[2]}</b></div>`).join(''); }
+  $('feed').innerHTML = D.deaths.filter(d => d[0] <= f.t && d[3] !== null).map(d =>
+    `<div>${d[0].toFixed(0)}s · <b>${name(d[1])}</b> place ${d[2]} · ${d[3] >= 0 ? 'by ' + name(d[3]) : d[3] === -2 ? 'by drone' : 'zone'}</div>`).reverse().join('');
+  $('scrub').value = fi;
+}
+$('log').onclick = e => { const el = e.target.closest('[data-k]'); if (el) { fi = +el.dataset.k; step(0); } };
+
+// ---------- top-down map
 const cv = $('map'), ctx = cv.getContext('2d');
 const B = D.map.bounds;
 let view = { s: 1, ox: 0, oy: 0 };
@@ -119,15 +214,14 @@ function drawStatic() {
   }
   staticImg = c;
 }
-let fi = 0, playing = false, last = 0, acc = 0;
-const F = D.frames;
 $('scrub').max = F.length - 1;
 function draw() {
-  if (!cv.width || !cv.height) return;
+  panel();
+  if (mode3d || !cv.width || !cv.height) return;
   if (!staticImg) drawStatic();
   const f = F[fi];
   if ($('follow').checked) {
-    const o = f.m[D.slot];
+    const o = f.m[sel];
     if (o[4]) { const k = view.s; view.ox = cv.width / 2 - o[0] * k; view.oy = cv.height / 2 + o[1] * k; staticImg = null; drawStatic(); }
   }
   ctx.drawImage(staticImg, 0, 0);
@@ -147,8 +241,11 @@ function draw() {
       ctx.stroke();
     }
   }
-  for (const [x1, y1, x2, y2, k] of f.b) { const a = W2S(x1, y1), b = W2S(x2, y2); ctx.strokeStyle = k ? '#8fd8ff' : '#ff4fd8'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(...b); ctx.stroke(); }
+  for (const b of f.b) { ctx.strokeStyle = b[0] ? '#8fd8ff' : '#ff4fd8'; ctx.lineWidth = 2; ctx.beginPath(); for (let k = 1; k < b.length; k += 3) { const [sx, sy] = W2S(b[k], b[k + 1]); k > 1 ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); } ctx.stroke(); }
   for (const [x, y, k] of f.p) { const [sx, sy] = W2S(x, y); ctx.fillStyle = k === 1 ? '#ff9a3c' : k === 2 ? '#9aa' : '#fff'; ctx.fillRect(sx - 1, sy - 1, k === 1 ? 4 : 2, k === 1 ? 4 : 2); }
+  const g = f.o && f.o[0], u = f.m[D.slot];
+  if (g && u[4]) { const a = W2S(u[0], u[1]), [gx, gy] = W2S(g[0], g[1]); ctx.strokeStyle = css('--goal'); ctx.lineWidth = 1; ctx.setLineDash([2, 4]); ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(gx, gy); ctx.stroke(); ctx.setLineDash([]);
+    ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(gx - 5, gy); ctx.lineTo(gx + 5, gy); ctx.moveTo(gx, gy - 5); ctx.lineTo(gx, gy + 5); ctx.stroke(); }
   const R = Math.max(5, 2.5 * view.s);
   f.m.forEach((m, i) => {
     const [sx, sy] = W2S(m[0], m[1]); const col = COL[D.labels[i]];
@@ -157,38 +254,229 @@ function draw() {
     ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
     ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.cos(m[2]) * R * 3, sy - Math.sin(m[2]) * R * 3); ctx.stroke();
     ctx.fillStyle = '#000a'; ctx.fillRect(sx - R, sy - R - 6, R * 2, 3); ctx.fillStyle = m[3] > 0.5 ? '#5fbf6a' : m[3] > 0.25 ? '#ffb13c' : '#ff5a5a'; ctx.fillRect(sx - R, sy - R - 6, R * 2 * m[3], 3);
-    if (i === D.slot) { ctx.fillStyle = '#fff'; ctx.font = '12px system-ui'; ctx.fillText(D.modes[m[5]], sx + R * 1.6, sy - R); }
+    if (i === sel) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(sx, sy, R * 2.2, 0, 7); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = '12px system-ui'; ctx.fillText(D.modes[m[5]], sx + R * 2.4, sy - R);
+      const tg = f.m[m[8]];  // only mech targets have a recorded position
+      if (tg && tg[4]) { ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(...W2S(tg[0], tg[1])); ctx.stroke(); ctx.setLineDash([]); }
+    }
   });
-  const o = f.m[D.slot];
-  $('time').textContent = `${Math.floor(f.t / 60)}:${String(Math.floor(f.t % 60)).padStart(2, '0')}`;
-  $('alive').textContent = f.m.filter(m => m[4]).length;
-  $('hp').textContent = o[4] ? `${Math.round(o[3] * 100)}%` : 'dead';
-  $('hpbar').style.width = `${o[4] ? o[3] * 100 : 0}%`;
-  $('mode').textContent = o[4] ? D.modes[o[5]] : '—';
-  $('weap').textContent = o[6].split('').map(c => WN[c]).join(' + ');
-  $('cubes').textContent = o[7];
-  $('feed').innerHTML = D.deaths.filter(d => d[0] <= f.t && d[3] !== null).map(d =>
-    `<div>${d[0].toFixed(0)}s · <b>${name(d[1])}</b> place ${d[2]} · ${d[3] >= 0 ? 'by ' + name(d[3]) : d[3] === -2 ? 'by drone' : 'zone'}</div>`).reverse().join('');
-  $('scrub').value = fi;
 }
+
+// ---------- 3D view (three.js, z up like the world frame)
+let T = null, camMode = 'chase', camYaw = 0, camEl = 0.32, camDist = 34, flyYaw = 0, flyPitch = 0;
+const keys = new Set(), TER = D.map.terrain;  // terrain: every 4th vertex of the map grid, so heights are good to about 1 m
+const groundZ = (x, y) => TER.h[clamp(Math.round((y - TER.y0) / TER.step), 0, TER.ny - 1) * TER.nx + clamp(Math.round((x - TER.x0) / TER.step), 0, TER.nx - 1)] * 0.1;
+function init3d() {
+  if (T) return;
+  const R = new THREE.WebGLRenderer({ antialias: true });
+  R.setPixelRatio(Math.min(2, devicePixelRatio || 1)); $('gl').appendChild(R.domElement);
+  const S = new THREE.Scene(), SKY = 0x7f9cb8;
+  S.background = new THREE.Color(SKY); S.fog = new THREE.Fog(SKY, 500, 1800);
+  const cam = new THREE.PerspectiveCamera(60, 1, 0.5, 4000); cam.up.set(0, 0, 1);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x3a4450, 0.6); hemi.position.set(0, 0, 1);
+  const sun = new THREE.DirectionalLight(0xffffff, 0.5); sun.position.set(-0.5, -0.35, 1);
+  S.add(hemi, sun);
+  const lam = (c, o) => new THREE.MeshLambertMaterial(Object.assign({ color: c }, o)), flat = (c, o) => new THREE.MeshBasicMaterial(Object.assign({ color: c }, o));
+  const upright = g => g.rotateX(Math.PI / 2);  // three's cylinders stand along y; the world's up is z
+
+  const t = TER, tw = (t.nx - 1) * t.step, th = (t.ny - 1) * t.step;
+  const tg = new THREE.PlaneGeometry(tw, th, t.nx - 1, t.ny - 1), tp = tg.attributes.position;
+  for (let r = 0; r < t.ny; r++) for (let i = 0; i < t.nx; i++) tp.setZ(r * t.nx + i, t.h[(t.ny - 1 - r) * t.nx + i] * 0.1);  // plane rows run north to south
+  tg.computeVertexNormals();
+  const ground = new THREE.Mesh(tg, lam(0x4f6b47)); ground.position.set(t.x0 + tw / 2, t.y0 + th / 2, 0); S.add(ground);
+
+  const ringPath = (path, r) => { for (let i = 0; i < r.length; i += 2) i ? path.lineTo(r[i], r[i + 1]) : path.moveTo(r[i], r[i + 1]); return path; };
+  const wall = lam(0x8d96a6), stadium = lam(0x9c948b), bridge = lam(0x6b5235);
+  for (const p of D.map.prisms) {
+    const sh = ringPath(new THREE.Shape(), p.r[0]);
+    for (let k = 1; k < p.r.length; k++) sh.holes.push(ringPath(new THREE.Path(), p.r[k]));
+    const m = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: p.h, bevelEnabled: false }), p.k === 's' ? stadium : p.h <= 2.5 ? bridge : wall);
+    m.position.z = p.b; S.add(m);
+  }
+  const fence = [];
+  for (const [h, ...l] of D.map.barriers) for (let i = 0; i + 3 < l.length; i += 2) {
+    const a = [l[i], l[i + 1], groundZ(l[i], l[i + 1])], b = [l[i + 2], l[i + 3], groundZ(l[i + 2], l[i + 3])];
+    fence.push(...a, ...b, b[0], b[1], b[2] + h, ...a, b[0], b[1], b[2] + h, a[0], a[1], a[2] + h);
+  }
+  const fg = new THREE.BufferGeometry(); fg.setAttribute('position', new THREE.Float32BufferAttribute(fence, 3));
+  S.add(new THREE.Mesh(fg, flat(0x59626e, { side: THREE.DoubleSide })));
+
+  const M4 = new THREE.Matrix4(), Q0 = new THREE.Quaternion(), V = new THREE.Vector3(), Sc = new THREE.Vector3();
+  const TR = D.map.trees;  // [crown x, crown y, crown radius, ground z, crown base, height, trunk x, trunk y]
+  const crown = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), lam(0x2f7a3d, { transparent: true, opacity: 0.5, depthWrite: false }), TR.length);
+  const trunk = new THREE.InstancedMesh(upright(new THREE.CylinderGeometry(0.5, 0.5, 1, 6)), lam(0x5a4632), TR.length);
+  TR.forEach(([cx, cy, cr, z, cb, h, x, y], i) => {
+    crown.setMatrixAt(i, M4.compose(V.set(cx, cy, z + (cb + h) / 2), Q0, Sc.set(cr, cr, Math.max(0.5, (h - cb) / 2))));
+    trunk.setMatrixAt(i, M4.compose(V.set(x, y, z + cb / 2), Q0, Sc.set(1, 1, Math.max(1, cb))));
+  });
+  S.add(trunk, crown);
+
+  const ringWall = (c, o) => { const m = new THREE.Mesh(upright(new THREE.CylinderGeometry(1, 1, 1, 128, 1, true)), flat(c, { transparent: true, opacity: o, side: THREE.DoubleSide, depthWrite: false })); S.add(m); return m; };
+  const zone = ringWall(0xe04b4b, 0.2), nextZone = ringWall(0xffffff, 0.45);
+
+  const mechs = D.labels.map((lab, i) => {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(upright(new THREE.CylinderGeometry(MC.radius, MC.radius, MC.height, 16)).translate(0, 0, MC.height / 2), lam(COL[lab]));
+    body.userData.i = i;
+    const turret = new THREE.Group(); turret.position.z = MC.muzzle_height; turret.rotation.order = 'ZYX';  // pitch, then yaw
+    turret.add(new THREE.Mesh(new THREE.BoxGeometry(MC.radius + 3.5, 1, 1).translate((MC.radius + 3.5) / 2, 0, 0), lam(0x1d2128)));
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(MC.radius * 0.7, 5, 8).rotateX(-Math.PI / 2).translate(0, 0, -2.5), flat(0xffa531));
+    const c = document.createElement('canvas'); c.width = 160; c.height = 48;
+    const tex = new THREE.CanvasTexture(c), tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true, sizeAttenuation: false }));
+    tag.scale.set(0.15, 0.045, 1); tag.position.z = MC.height + 3; tag.renderOrder = 10;
+    g.add(body, turret, flame, tag); S.add(g);
+    return { g, body, turret, flame, c, tex, hp: -1, s: null };
+  });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(MC.radius * 1.8, 0.35, 8, 48), flat(0xffffff)); S.add(ring);
+  const line = c => { const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: c, depthTest: false, transparent: true }));
+    l.frustumCulled = false; l.renderOrder = 9; S.add(l); return l; };
+  const goal = new THREE.Mesh(upright(new THREE.CylinderGeometry(0.6, 0.6, 40, 8)).translate(0, 0, 20), flat(0x35e0ff, { transparent: true, opacity: 0.65 })); S.add(goal);
+  const proj = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 5), flat(0xffffff), 800);
+  const npc = new THREE.InstancedMesh(new THREE.BoxGeometry(2.4, 2.4, 1.2), lam(0xc3ccd6), 200);
+  proj.frustumCulled = npc.frustumCulled = false; S.add(proj, npc);
+  T = { R, S, cam, mechs, ring, goal, zone, nextZone, proj, npc, M4, Q0, V, Sc, ray: new THREE.Raycaster(),
+    aim: line(0xffe066), tgt: line(0xffffff), goalLine: line(0x35e0ff), beams: [], drops: [],
+    beamGeo: new THREE.CylinderGeometry(0.35, 0.35, 1, 6), up: new THREE.Vector3(0, 1, 0), beamMat: [flat(0xff4fd8), flat(0x8fd8ff)],
+    dropGeo: upright(new THREE.CylinderGeometry(D.dropR, D.dropR, 14, 24, 1, true)).translate(0, 0, 7), dropMat: flat(0xc9a227, { transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }),
+    pc: [new THREE.Color(0xfff2a8), new THREE.Color(0xff7a1a), new THREE.Color(0xc3ccd6)] };
+}
+function drawTag(M, i, hp) {
+  const g = M.c.getContext('2d'); g.clearRect(0, 0, 160, 48);
+  g.fillStyle = '#000a'; g.fillRect(10, 4, 140, 10); g.fillStyle = hp > 0.5 ? '#5fbf6a' : hp > 0.25 ? '#ffb13c' : '#ff5a5a'; g.fillRect(10, 4, 140 * hp, 10);
+  g.font = '600 22px system-ui'; g.textAlign = 'center'; g.lineWidth = 4; g.strokeStyle = '#000'; g.strokeText(name(i), 80, 40); g.fillStyle = COL[D.labels[i]]; g.fillText(name(i), 80, 40);
+  M.tex.needsUpdate = true; M.hp = hp;
+}
+function fit3d() {
+  const r = $('mapwrap').getBoundingClientRect();
+  if (!T || r.width < 2 || r.height < 2) return;
+  T.R.setSize(r.width, r.height, false); T.cam.aspect = r.width / r.height; T.cam.updateProjectionMatrix();
+}
+const setLine = (l, a, b) => { const p = l.geometry.attributes.position; p.setXYZ(0, ...a); p.setXYZ(1, ...b); p.needsUpdate = true; l.visible = true; };
+const pool = (list, k, make) => { if (!list[k]) { list[k] = make(); T.S.add(list[k]); } list[k].visible = true; return list[k]; };
+function render3d(dt) {
+  const f = F[fi], nf = F[fi + 1], a = playing && nf ? Math.min(1, acc) : 0, tNow = f.t + a * D.dt, lerp = (p, q, k) => p[k] + (q[k] - p[k]) * a;
+  T.mechs.forEach((M, i) => {  // positions between two recorded frames are interpolated while playing
+    const m = f.m[i], n = a && nf.m[i][4] ? nf.m[i] : m;
+    const s = M.s = { x: lerp(m, n, 0), y: lerp(m, n, 1), z: lerp(m, n, 9), yaw: m[2] + wrapA(n[2] - m[2]) * a, pitch: lerp(m, n, 10), alive: m[4], m };
+    M.g.visible = !!m[4] && !(camMode === 'first' && i === sel);
+    M.g.position.set(s.x, s.y, s.z); M.turret.rotation.set(0, -s.pitch, s.yaw); M.flame.visible = !!(m[11] & 1);
+    M.body.material.emissive.setHex(0);
+    if (Math.abs(m[3] - M.hp) > 0.02) drawTag(M, i, m[3]);
+  });
+  for (let k = countLE(HT, tNow - 0.3); k < HT.length && HT[k] <= tNow; k++) { const M = T.mechs[D.hits[k][2]]; if (M) M.body.material.emissive.setHex(0xffffff); }  // flash on a hit
+  const s = T.mechs[sel].s, eye = [s.x, s.y, s.z + MC.eye_height];
+  T.ring.visible = !!s.alive; T.ring.position.set(s.x, s.y, s.z + 0.4);
+  T.aim.visible = T.tgt.visible = T.goal.visible = T.goalLine.visible = false;
+  if (s.alive) {
+    const mz = [s.x, s.y, s.z + MC.muzzle_height], cp = Math.cos(s.pitch), tg = T.mechs[s.m[8]];
+    setLine(T.aim, mz, [mz[0] + cp * Math.cos(s.yaw) * 90, mz[1] + cp * Math.sin(s.yaw) * 90, mz[2] + Math.sin(s.pitch) * 90]);
+    if (tg && tg.s.alive) setLine(T.tgt, mz, [tg.s.x, tg.s.y, tg.s.z + MC.height / 2]);
+  }
+  const g = f.o && f.o[0], u = T.mechs[D.slot].s;
+  if (g && u.alive) { const gz = groundZ(g[0], g[1]); T.goal.visible = true; T.goal.position.set(g[0], g[1], gz); setLine(T.goalLine, [u.x, u.y, u.z + 1], [g[0], g[1], gz + 1]); }
+
+  const nextP = a ? new Map(nf.p.map(p => [p[4], p])) : null, nextN = a ? new Map(nf.n.map(p => [p[3], p])) : null;
+  let n = 0;
+  for (const p of f.p) { if (n >= 800) break; const q = (nextP && nextP.get(p[4])) || p, sc = p[2] === 1 ? 1.5 : 0.7;
+    T.proj.setMatrixAt(n, T.M4.compose(T.V.set(lerp(p, q, 0), lerp(p, q, 1), lerp(p, q, 3)), T.Q0, T.Sc.set(sc, sc, sc))); T.proj.setColorAt(n++, T.pc[p[2]]); }
+  T.proj.count = n; T.proj.instanceMatrix.needsUpdate = true; if (T.proj.instanceColor) T.proj.instanceColor.needsUpdate = true;
+  n = 0;
+  for (const p of f.n) { if (n >= 200) break; const q = (nextN && nextN.get(p[3])) || p;
+    T.npc.setMatrixAt(n++, T.M4.compose(T.V.set(lerp(p, q, 0), lerp(p, q, 1), lerp(p, q, 2) + 1), T.Q0, T.Sc.set(1, 1, 1))); }
+  T.npc.count = n; T.npc.instanceMatrix.needsUpdate = true;
+  T.beams.forEach(b => b.visible = false); n = 0;
+  for (const b of f.b) for (let k = 1; k + 5 < b.length; k += 3) {
+    const m = pool(T.beams, n++, () => new THREE.Mesh(T.beamGeo, T.beamMat[0])), d = T.V.set(b[k + 3] - b[k], b[k + 4] - b[k + 1], b[k + 5] - b[k + 2]), len = d.length() || 1;
+    m.material = T.beamMat[b[0]]; m.position.set((b[k] + b[k + 3]) / 2, (b[k + 1] + b[k + 4]) / 2, (b[k + 2] + b[k + 5]) / 2);
+    m.quaternion.setFromUnitVectors(T.up, d.divideScalar(len)); m.scale.set(1, len, 1);
+  }
+  T.drops.forEach(d => d.visible = false);
+  f.d.forEach((d, k) => pool(T.drops, k, () => new THREE.Mesh(T.dropGeo, T.dropMat)).position.set(d[0], d[1], d[3]));
+  const z = f.z;
+  T.zone.position.set(z[0], z[1], 0); T.zone.scale.set(z[2], z[2], 90);  // a low wall: a tall one tints the whole sky red from inside
+  T.nextZone.position.set(z[3], z[4], s.z + 2); T.nextZone.scale.set(Math.max(0.1, z[5]), Math.max(0.1, z[5]), 3);
+
+  const c = T.cam;
+  if (camMode === 'chase') {  // behind the bot's aim; drag turns the orbit, wheel sets the distance
+    const h = s.yaw + camYaw, ce = Math.cos(camEl);
+    c.position.set(eye[0] - Math.cos(h) * ce * camDist, eye[1] - Math.sin(h) * ce * camDist, eye[2] + Math.sin(camEl) * camDist);
+    c.position.z = Math.max(c.position.z, groundZ(c.position.x, c.position.y) + 2);
+    c.lookAt(eye[0] + Math.cos(h) * 25, eye[1] + Math.sin(h) * 25, eye[2]);
+  } else if (camMode === 'first') {
+    const cp = Math.cos(s.pitch); c.position.set(...eye); c.lookAt(eye[0] + cp * Math.cos(s.yaw), eye[1] + cp * Math.sin(s.yaw), eye[2] + Math.sin(s.pitch));
+  } else {
+    const k = code => keys.has(code) ? 1 : 0, sp = (k('ShiftLeft') || k('ShiftRight') ? 260 : 80) * dt, cp = Math.cos(flyPitch);
+    const fx = cp * Math.cos(flyYaw), fy = cp * Math.sin(flyYaw), fz = Math.sin(flyPitch), fw = k('KeyW') - k('KeyS'), rt = k('KeyD') - k('KeyA');
+    c.position.x += (fx * fw + Math.sin(flyYaw) * rt) * sp; c.position.y += (fy * fw - Math.cos(flyYaw) * rt) * sp; c.position.z += (fz * fw + k('KeyE') - k('KeyQ')) * sp;
+    c.lookAt(c.position.x + fx, c.position.y + fy, c.position.z + fz);
+  }
+  T.R.render(T.S, c);
+}
+function setCam(m) {
+  if (m === 'fly' && T) { const v = T.cam.getWorldDirection(new THREE.Vector3()); flyYaw = Math.atan2(v.y, v.x); flyPitch = Math.asin(clamp(v.z, -1, 1)); }  // start from the current view
+  camMode = $('cam').value = m;
+  $('camhelp').textContent = m === 'chase' ? 'Drag to orbit · wheel to zoom · [ ] next mech' : m === 'first' ? 'Looking along the selected mech\'s aim · [ ] next mech' : 'W A S D move · Q E down / up · Shift fast · drag to look';
+}
+$('cam').onchange = e => { setCam(e.target.value); e.target.blur(); };
+
+// ---------- playback and input
 function tick(ts) {
-  if (playing) { acc += (ts - last) / 1000 * (+$('speed').value) / 0.2; while (acc >= 1 && fi < F.length - 1) { fi++; acc--; } if (fi >= F.length - 1) toggle(false); draw(); }
-  last = ts; requestAnimationFrame(tick);
+  const dt = Math.min(0.25, (ts - last) / 1000); last = ts;
+  if (playing) { acc += dt * (+$('speed').value) / D.dt; while (acc >= 1 && fi < F.length - 1) { fi++; acc--; } if (fi >= F.length - 1) toggle(false); draw(); }
+  if (mode3d && T) render3d(dt);
+  requestAnimationFrame(tick);
 }
-function toggle(p) { playing = p ?? !playing; $('play').textContent = playing ? 'Pause' : 'Play'; }
+function toggle(p) { playing = p ?? !playing; acc = 0; $('play').textContent = playing ? 'Pause' : 'Play'; }
+function step(n) { toggle(false); fi = clamp(fi + n, 0, F.length - 1); draw(); }
 $('play').onclick = () => toggle();
+$('prev').onclick = () => step(-1);
+$('next').onclick = () => step(1);
 $('scrub').oninput = e => { fi = +e.target.value; draw(); };
 $('follow').onchange = () => { if (!$('follow').checked) fit(); else draw(); };
 $('trails').onchange = draw;
 cv.addEventListener('wheel', e => { e.preventDefault(); const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
   const mx = (e.clientX - r.left) * dpr, my = (e.clientY - r.top) * dpr, k = e.deltaY < 0 ? 1.2 : 1 / 1.2;
   view.ox = mx - (mx - view.ox) * k; view.oy = my - (my - view.oy) * k; view.s *= k; staticImg = null; draw(); }, { passive: false });
-let drag = null;
-cv.onmousedown = e => drag = [e.clientX, e.clientY];
+$('gl').addEventListener('wheel', e => { e.preventDefault(); camDist = clamp(camDist * (e.deltaY > 0 ? 1.15 : 1 / 1.15), 8, 500); }, { passive: false });
+let drag = null, moved = 0;
+cv.onmousedown = $('gl').onmousedown = e => { drag = [e.clientX, e.clientY]; moved = 0; };
 window.onmouseup = () => drag = null;
-window.onmousemove = e => { if (!drag) return; const dpr = devicePixelRatio || 1; view.ox += (e.clientX - drag[0]) * dpr; view.oy += (e.clientY - drag[1]) * dpr; drag = [e.clientX, e.clientY]; staticImg = null; draw(); };
-window.addEventListener('keydown', e => { if (e.code === 'Space') { e.preventDefault(); toggle(); } });
-window.onresize = fit;
+cv.onclick = e => {  // a click that was not a pan selects the nearest mech
+  if (moved > 4) return;
+  const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1, mx = (e.clientX - r.left) * dpr, my = (e.clientY - r.top) * dpr;
+  let best = 20 * dpr;
+  F[fi].m.forEach((m, i) => { const [sx, sy] = W2S(m[0], m[1]), d = Math.hypot(sx - mx, sy - my); if (d < best) { best = d; sel = i; } });
+  draw();
+};
+$('gl').onclick = e => {
+  if (moved > 4 || !T) return;
+  const r = $('gl').getBoundingClientRect();
+  T.ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, 1 - (e.clientY - r.top) / r.height * 2), T.cam);
+  const hit = T.ray.intersectObjects(T.mechs.filter(M => M.g.visible).map(M => M.body))[0];
+  if (hit) { sel = hit.object.userData.i; draw(); }
+};
+window.onmousemove = e => {
+  if (!drag) return;
+  const dx = e.clientX - drag[0], dy = e.clientY - drag[1], dpr = devicePixelRatio || 1;
+  moved += Math.abs(dx) + Math.abs(dy); drag = [e.clientX, e.clientY];
+  if (!mode3d) { view.ox += dx * dpr; view.oy += dy * dpr; staticImg = null; draw(); }
+  else if (camMode === 'chase') { camYaw -= dx * 0.006; camEl = clamp(camEl + dy * 0.006, -0.25, 1.5); }
+  else if (camMode === 'fly') { flyYaw -= dx * 0.004; flyPitch = clamp(flyPitch - dy * 0.004, -1.5, 1.5); }
+};
+window.addEventListener('keydown', e => {
+  keys.add(e.code);
+  if (e.code === 'Space') { e.preventDefault(); toggle(); }
+  if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') { e.preventDefault(); step((e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 10 : 1)); }
+  if (e.code === 'BracketLeft' || e.code === 'BracketRight') {  // previous / next living mech
+    const d = e.code === 'BracketLeft' ? 15 : 1;
+    for (let k = 1, i = sel; k <= 16; k++) { i = (i + d) % 16; if (F[fi].m[i][4]) { sel = i; break; } }
+    draw();
+  }
+});
+window.addEventListener('keyup', e => keys.delete(e.code));
+window.addEventListener('blur', () => keys.clear());
+window.onresize = () => mode3d ? fit3d() : fit();
 
 // ---------- charts
 function lineChart(el, series, yLabel) {
@@ -228,9 +516,23 @@ function charts() {
     ], 'placement points');
   }
 }
-$('tabReplay').onclick = () => { $('tabReplay').setAttribute('aria-selected', 'true'); $('tabCharts').setAttribute('aria-selected', 'false'); $('replay').style.display = ''; $('controls').style.display = ''; $('charts').style.display = 'none'; fit(); };
-$('tabCharts').onclick = () => { $('tabCharts').setAttribute('aria-selected', 'true'); $('tabReplay').setAttribute('aria-selected', 'false'); $('replay').style.display = 'none'; $('controls').style.display = 'none'; $('charts').style.display = 'block'; charts(); };
-requestAnimationFrame(tick); fit();
+
+// ---------- views: 3D, top-down map, training charts
+function show(v) {
+  if (v === '3d') try { init3d(); } catch (err) {  // no WebGL: stay on the map
+    console.error(err); $('tab3d').disabled = true; $('tab3d').title = '3D needs WebGL: ' + err.message; v = 'map'; }
+  for (const [id, k] of [['tab3d', '3d'], ['tabReplay', 'map'], ['tabCharts', 'charts']]) $(id).setAttribute('aria-selected', k === v);
+  const rep = v !== 'charts';
+  mode3d = v === '3d';
+  $('replay').style.display = $('controls').style.display = rep ? '' : 'none'; $('charts').style.display = rep ? 'none' : 'block';
+  cv.style.display = mode3d ? 'none' : 'block'; $('gl').style.display = $('camhelp').style.display = mode3d ? 'block' : 'none';
+  $('cam').style.display = mode3d ? '' : 'none'; $('opt2d').style.display = mode3d ? 'none' : '';
+  if (!rep) charts(); else if (mode3d) { fit3d(); draw(); } else fit();
+}
+$('tab3d').onclick = () => show('3d');
+$('tabReplay').onclick = () => show('map');
+$('tabCharts').onclick = () => show('charts');
+setCam('chase'); requestAnimationFrame(tick); show('3d');
 </script>
 </body>
 </html>

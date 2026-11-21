@@ -47,32 +47,40 @@ class HouseBot(Bot):
         return super().act(obs)
 
 
-def practice(cfg, seed, params):
-    """One practice match: params vs 15 cooperating house bots. Returns placement points (16 - place)."""
+def practice_match(cfg, seed, params):
+    """Unrun practice match: params vs 15 cooperating house bots. Returns (match, our slot, seat labels)."""
     rng = random.Random(seed)
     slot = rng.randrange(16)
     levels = LEVELS[:]
     rng.shuffle(levels)
     shared = {"player": slot, "last": None, "hunters": set(), "all_hunt_t": ALL_HUNT_T}
-    facs, teams, lv = [], [], {}
+    facs, teams, lv, labels = [], [], {}, []
     for i in range(16):
         if i == slot:
             facs.append(lambda h: Bot(h, params))
             teams.append(None)
+            labels.append("ours")
         else:
             L = levels.pop()
             lv[i] = RANK[L]
             facs.append(lambda h, L=L: HouseBot(h, L, shared))
             teams.append(1)
-    res = Match(cfg, seed, facs, teams, track=slot, shared=shared, levels=lv).run()
+            labels.append(L)
+    return Match(cfg, seed, facs, teams, track=slot, shared=shared, levels=lv), slot, labels
+
+
+def practice(cfg, seed, params):
+    """One practice match. Returns placement points (16 - place)."""
+    M, slot, _ = practice_match(cfg, seed, params)
+    res = M.run()
     return 16 - res["place"][slot], res
 
 
-def ffa(cfg, seed, params_list):
-    """One free-for-all among 16 genomes. Returns placement points per entry (same order)."""
+def ffa_match(cfg, seed, params_list):
+    """Unrun free-for-all among 16 genomes. Returns (match, order) with order[slot] = index into params_list."""
     rng = random.Random(seed)
     order = list(range(16))
-    rng.shuffle(order)  # order[slot] = index into params_list
+    rng.shuffle(order)
     if len(params_list) > 16:
         raise ValueError("FFA has 16 seats")
     facs = []
@@ -81,7 +89,13 @@ def ffa(cfg, seed, params_list):
             facs.append(lambda h, p=params_list[entry]: Bot(h, p))
         else:
             facs.append(lambda h: HouseBot(h, "expert", None))
-    res = Match(cfg, seed, facs).run()
+    return Match(cfg, seed, facs), order
+
+
+def ffa(cfg, seed, params_list):
+    """One free-for-all. Returns placement points per entry (same order)."""
+    M, order = ffa_match(cfg, seed, params_list)
+    res = M.run()
     pts = [0.0] * 16
     for s in range(16):
         pts[order[s]] = 16 - res["place"][s]
