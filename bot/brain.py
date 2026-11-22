@@ -544,7 +544,7 @@ class Bot:
                         in_drop = dl < 0.6 * dr["radius"]
                         mvx, mvy = (0.0, 0.0) if in_drop else (px - x, py - y)
                         break
-            if self.combat_pilot and target and threats and weapons[0] and weapons[0]["reload"] > 0.5 and not kinds[1]:
+            if self.combat_pilot and target and threats and weapons[0] and weapons[0].get("reload", 0) > 0.5 and not kinds[1]:
                 mvx, mvy = self.flee_cover(x, y, z, t, threats, nc, nr, margin, st)
         elif mode == "flee":
             if gap_dir is not None:
@@ -685,7 +685,7 @@ class Bot:
         if self.routes and self.flight is None and me["grounded"] and mode != "capture":
             purpose, sources, destination = None, [], home
             recent_contact = self.last_contact and t - self.last_contact[0] < 2.0
-            reloading = weapons[0] and weapons[0]["reload"] > 0.5 and not kinds[1]
+            reloading = weapons[0] and weapons[0].get("reload", 0) > 0.5 and not kinds[1]
             if mode != "zone":
                 if mode == "watch" and target and len(duel) == 2:
                     purpose = "opportunity"
