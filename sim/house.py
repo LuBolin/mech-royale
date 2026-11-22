@@ -5,6 +5,7 @@ weakest hunt first, more join as the player kills them, and all hunt late. Diffi
 changes aim noise, lead and loot use. shortcut: all bots hunt from ALL_HUNT_T; tune if practice
 scores on the server disagree with the simulator.
 """
+import os
 import random
 
 import params as PR
@@ -32,6 +33,7 @@ class HouseBot(Bot):
                    survival=0.0)  # keep the calibrated house logic; brain.py's survival layer is ours only
         prm.update(PR.OFF)
         super().__init__(hello, prm, aim_noise=noise)
+        self.base_noise = noise
         self.shared = shared
 
     def act(self, obs):
@@ -53,9 +55,16 @@ class HouseBot(Bot):
         sh, p, t = self.shared, self.p, obs["t"]
         # First hunter at ~20 s, not at t=0 (nullat0m7 sim/house.ts joinStart; track page: "one early").
         hunting = hunting and t >= V2_FIRST_HUNT_T
+        pm = sh["match"].mechs[sh["player"]]
+        d = max(1.0, ((pm.x - obs["self"]["pos"][0]) ** 2 + (pm.y - obs["self"]["pos"][1]) ** 2) ** 0.5)
+        # Aim noise grows with range: real house gun hits fall from ~88% under 40 m to ~15% at 120-180 m, faster
+        # than constant angular noise gives (sim/house_aim.py measures it).
+        self.aim_noise = self.base_noise * AIM_A * (d / 80.0) ** AIM_B
         # Non-hunters never start or return fights (pedduvedcharan NOTES.md cal-A, joekritenbrink README: passive
         # non-hunters put the kit starter at 0.8-1.1 vs real 1.15; itsyashk crates/sim/README: retaliation gives
         # 0.34-0.54). Here, retaliating for 6 s (jack tools/house.py) put the starter at 0.22 and all bots at ~0.4x.
+        # Waking non-hunters when shot or approached within 45-60 m (ch2li's model) lowered board agreement
+        # (rank correlation 0.74 -> 0.64-0.69, sim/rank_check.py), so they stay passive.
         pl = sh["player"]
         p["engage_range"] = 230 if hunting else 0
         p["aggr"] = 50.0 if hunting else 1.2
@@ -74,6 +83,10 @@ class HouseBot(Bot):
 
 
 V2_FIRST_HUNT_T, V2_INTEL_S = 20.0, 8.0
+# House v2 aim: noise = tier noise * AIM_A * (range / 80 m) ** AIM_B. Env overrides are for calibration sweeps.
+# 0.6 / 0.5 (league.py --house v2c) gives 95/57/30/16/2% at <40/40-80/80-120/120-180/180+ m (real: 88/55/30/15/3%)
+# and raises rank correlation with the board from 0.66 to 0.74 (sim/house_aim.py, sim/rank_check.py).
+AIM_A, AIM_B = float(os.environ.get("HOUSE_AIM_A", 1.0)), float(os.environ.get("HOUSE_AIM_B", 0.0))
 
 
 def practice_match(cfg, seed, params, player=None, house="v1"):

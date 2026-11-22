@@ -260,7 +260,8 @@ def main():
     ap.add_argument("--seed-base", type=int, default=5000)
     ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--label", default="run")
-    ap.add_argument("--house", choices=["v1", "v2"], default="v1", help="practice: house-bot model (sim/house.py)")
+    ap.add_argument("--house", choices=["v1", "v2", "v2c"], default="v1",
+                    help="practice: house-bot model (sim/house.py); v2c = v2 with house aim calibrated to real hit rates")
     args = ap.parse_args()
     roster = json.loads(ROSTER.read_text()) if ROSTER.exists() else {}
     seeds = range(args.seed_base, args.seed_base + args.seeds)
@@ -287,7 +288,9 @@ def main():
             sys.exit(f"entry {n}: docker image {img} not found")
     freeze_house()
     os.environ["LEAGUE_RUN"] = uuid.uuid4().hex[:6]  # container name prefix, inherited by the workers
-    os.environ["LEAGUE_HOUSE"] = args.house
+    os.environ["LEAGUE_HOUSE"] = "v2" if args.house == "v2c" else args.house
+    if args.house == "v2c":  # sim/house.py reads these at import; workers inherit them
+        os.environ["HOUSE_AIM_A"], os.environ["HOUSE_AIM_B"] = "0.6", "0.5"
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / f"{args.label}-{args.mode}.csv"
     new = not path.exists()

@@ -63,7 +63,11 @@ class Bot:
         self.takeoff_approach = None
         self.last_contact = None
         self.heard_sector = None
-        self.rng = random.Random(hello.get("seed", 0))
+        # The board replays fixed seeds, so the same code scores the same; salt draws a fresh sample of our own dice.
+        self.rng = random.Random(hello.get("seed", 0) + int(p["salt"]))
+        self.phase = (hello.get("slot", 0) * 2.39996) % TAU  # spreads explore and calm-ring choices across slots
+        self.seen, self.seen_at = set(), -1.0  # explore: 28 m grid cells our view has swept
+        self.explore_pt, self.explore_at = None, -1.0
         self.aim_noise = aim_noise
         self.reach = cfg["loot"]["pickup_radius"]
         self.wpref = {"gun": -1.0, "mortar": p["w_mortar"], "laser": p["w_laser"], "lightning": p["w_lightning"]}
@@ -267,7 +271,13 @@ class Bot:
                 continue
             if self.hunt:
                 hp = m.get("hp", 1400)
-                s = d + 0.1 * hp - (200 if hp <= 0.3 * m.get("max_hp", 1400) else 0)
+                s = d + p["hunt_hpw"] * hp - (200 if hp <= 0.3 * m.get("max_hp", 1400) else 0)
+                if p["laser_pulses"] >= 0.5 and kinds[1] == "laser":
+                    # a placement comes from a counter reaching zero: prefer the mech the fewest full beams finish
+                    ls = weapons[1]["stats"]
+                    beam = ls["damage"] * (1 + 0.04 * min(me["cubes"], 10)) * (
+                        1 + ls.get("cookoff", 0.0) * ("mortar" in m.get("weapons", ())))
+                    s += 300 * math.ceil(hp / max(1.0, beam))
                 s -= (200 if m["id"] == self.stick[0] and t - self.stick[1] < 2 else 0)
                 s -= (40 if t - self.hit_by.get(m["id"], -1e9) < 4 else 0) + (15 if closing[m["id"]] > 3 else 0)
                 mx, my, mz = m["pos"]
@@ -308,6 +318,9 @@ class Bot:
         if self.routes and target:
             tx, ty, tz = target["pos"]
             self.last_contact = (t, (tx, ty, tz + 4.5 * (1 + 0.05 * target.get("cubes", 0))))
+
+        if p["explore"] >= 0.5 and t < 125:
+            self.mark_seen(t, x, y, me["aim"][0])
 
         # ---- zone geometry
         zone = obs["zone"]
@@ -567,6 +580,15 @@ class Bot:
                     sc = (d + 18) / 85 if self.econ else d + 25
                     if d < min(near, p["npc_dist"]) and safe(px, py, d) and sc < gbest:
                         gbest, goal, gkind, gobj = sc, (px, py, pz), "npc", n
+            # explore: without a laser in the opening, sweep unseen ground for one instead of idling or farming far away
+            if (p["explore"] >= 0.5 and t < 125 and self.goal_hint is None and kinds[1] != "laser" and hpf > 0.52
+                    and me["in_zone"] and dc < cr - 28
+                    and (goal is None or (gkind in ("crate", "npc") and math.hypot(goal[0] - x, goal[1] - y) > 24))
+                    and not any(k == "laser" and t - ts < 9 and math.hypot(pp[0] - x, pp[1] - y) < 125
+                                for k, pp, ts in self.loot.values())):
+                ex = self.explore_goal(t, x, y, zone)
+                if ex is not None:
+                    goal, gkind, gobj = (ex[0], ex[1], z), "explore", None
             if self.goal_hint is not None:
                 goal, gkind = (self.goal_hint[0], self.goal_hint[1], z), "hint"
             if goal is None:
@@ -590,7 +612,7 @@ class Bot:
                     goal_z = gz
             m_ = math.hypot(mvx, mvy)
             if m_ > 1e-6:
-                scale = 1.0 if gkind in ("drop", "hint") else 1.0 - 0.6 * p["quiet"]
+                scale = 1.0 if gkind in ("drop", "hint", "explore") else 1.0 - 0.6 * p["quiet"]
                 if gkind == "home" and d < 6:
                     scale = min(scale, 0.35)
                 if t < p["open_boost_s"] and not opening:
@@ -783,6 +805,8 @@ class Bot:
             want_yaw = self.sound[1]
         elif math.hypot(mvx, mvy) > 0.5:
             want_yaw = math.atan2(mvy, mvx)
+            if self.goal and self.goal[3] == "explore":
+                want_yaw += 0.9 * math.sin(0.7 * t)  # sweep the view wedge across both sides of the path
         else:
             self.scan += p["scan_speed"] * 0.1
             want_yaw = yaw + p["scan_speed"] * 0.25
@@ -866,6 +890,44 @@ class Bot:
         return a
 
     # ------------------------------------------------------------------ helpers
+    def mark_seen(self, t, x, y, yaw):
+        """explore: record 28 m cells our view swept (45 m all round, 120 m in the forward wedge), every 0.6 s."""
+        if t - self.seen_at < 0.6:
+            return
+        self.seen_at = t
+        i0, j0 = math.floor(x / 28.0), math.floor(y / 28.0)
+        ux, uy = math.cos(yaw), math.sin(yaw)
+        for i in range(i0 - 5, i0 + 6):
+            for j in range(j0 - 5, j0 + 6):
+                dx, dy = (i + 0.5) * 28.0 - x, (j + 0.5) * 28.0 - y
+                r = math.hypot(dx, dy)
+                if r < 45 or (r < 120 and dx * ux + dy * uy > 0.5 * r):
+                    self.seen.add((i, j))
+
+    def explore_goal(self, t, x, y, zone):
+        """explore: a point 55 m out whose onward view covers the most unswept cells; kept 2.5 s or until reached."""
+        pt = self.explore_pt
+        if pt is not None and t - self.explore_at < 2.5 and math.hypot(pt[0] - x, pt[1] - y) > 7:
+            return pt
+        (cx, cy), cr = zone["center"], zone["radius"]
+        (nx, ny), nr = zone["next_center"], zone["next_radius"]
+        best, pick = -1e9, None
+        for k in range(16):
+            a = self.phase + k * TAU / 16
+            dx, dy = math.cos(a), math.sin(a)
+            px, py = x + 55 * dx, y + 55 * dy
+            if math.hypot(px - cx, py - cy) > cr - 14:
+                continue
+            cells = {(math.floor((x + r * dx - s * dy) / 28.0), math.floor((y + r * dy + s * dx) / 28.0))
+                     for r in (45, 75, 105, 135) for s in (-35, 0, 35)}
+            score = len(cells - self.seen) - 0.015 * max(0.0, math.hypot(px - nx, py - ny) - nr)
+            if pt is not None:
+                score += 1 - 0.012 * math.hypot(px - pt[0], py - pt[1])
+            if score > best:
+                best, pick = score, (px, py)
+        self.explore_pt, self.explore_at = pick, t
+        return pick
+
     def end_flight(self, t, landed):
         self.flight = None
         self.route = []
@@ -1059,7 +1121,7 @@ class Bot:
                     if "mortar" in target.get("weapons", ()):
                         damage *= 1 + ls.get("cookoff", 0.0)
                     # Enemy armor is hidden. Discount the current charge rather than counting a future tick.
-                    if 0.8 * damage >= target["hp"] and W.los(x, y, muz, tx, ty, tcz):
+                    if p["lethal_k"] * damage >= target["hp"] and W.los(x, y, muz, tx, ty, tcz):
                         ready = True
                 if self.on["laser_smart"] and w1["charge"] >= ls["min_charge"] - 1e-6:
                     # the shot leaves next tick: judge aim after one tick of torso slew toward the target's next spot
@@ -1200,7 +1262,13 @@ class Bot:
         for aid, (ta, b) in self.attackers.items():  # unseen rifles that hit us lately: assume 80 m out
             if aid not in vis and obs["t"] - ta < 1.5:
                 shooters.append((80 / 252.0 + 0.1, -math.cos(b), -math.sin(b)))
-        if not (rounds or shells or shooters or (fighting and target is not None)):
+        # arc_avoid: lightning cannot miss inside its reach (240 dps), so stay out of it for every carrier in view
+        arcs = []
+        if self.p["arc_avoid"] >= 0.5 and not any(w and w["kind"] == "lightning" for w in me["weapons"]):
+            reach = self.cfg["weapons"]["lightning"]["range"] + 12
+            arcs = [m["pos"][:2] for m in mechs if "lightning" in m.get("weapons", ())
+                    and math.hypot(m["pos"][0] - x, m["pos"][1] - y) < reach + 20]
+        if not (rounds or shells or shooters or arcs or (fighting and target is not None)):
             return None
         # candidates
         wm = math.hypot(*want)
@@ -1264,13 +1332,18 @@ class Bot:
         if d_now < -0.5:
             score -= np.where((d_out > -4) & (d_out > d_now), (d_out - d_now) * 8, 0.0)
         score -= np.where(boost, 1.5 if me["energy"] < self.p["boost_energy"] else 0.3, 0.0)
+        for ax, ay in arcs:
+            score -= 3.0 * np.maximum(0.0, reach - np.hypot(prog[:, 0] - ax, prog[:, 1] - ay))
         # Commit to a move for 0.3-0.6 s: every candidate assumes its command is held, and re-picking each
         # 0.1 s jitters around the straight line a lead shot aims at. Only rounds and shells outweigh this.
         last, until = getattr(self, "ev_last", ((0.0, 0.0), False)), getattr(self, "ev_until", -1.0)
         same = (D2 @ np.array(last[0]) > 0.98) & (boost == last[1])
         # The hold ends once we reach the commanded speed: constant velocity is what a lead shot predicts.
         accelerating = np.hypot(*(T - np.array(me["vel"][:2])).T) > 3.0
-        score += np.where(same, np.where(accelerating & (obs["t"] < until), 12.0, 0.25), 0.0)
+        # jink_hold > 0: hold each leg for its full time (Epic, 5,193 real rounds: 0.6-1.4 s boosted legs cut hits at
+        # 78-150 m from 54% to 26%; legs under 0.6 s barely help because a reversal takes 0.4 s)
+        jink = self.p["jink_hold"] > 0
+        score += np.where(same, np.where((accelerating | jink) & (obs["t"] < until), 12.0, 0.25), 0.0)
         if target is not None:
             tx, ty, tz = target["pos"]
             a = np.column_stack([prog, np.full(len(D2), z + st["muzzle_height"])])
@@ -1281,7 +1354,8 @@ class Bot:
             ux, uy = D2[c]
             if (ux == 0 and uy == 0) or W.clear(x, y, z, ux, uy, 6.0, st["step_up"], height):
                 if not same[c] or obs["t"] >= until:
-                    self.ev_until = obs["t"] + 0.3 + 0.3 * self.rng.random()
+                    lo = self.p["jink_hold"] if jink else 0.3
+                    self.ev_until = obs["t"] + lo + (1.33 * lo if jink else 0.3) * self.rng.random()
                 self.ev_last = ((ux, uy), bool(boost[c]))
                 return (float(ux), float(uy)), bool(boost[c]), threatened
         return None

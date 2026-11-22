@@ -104,6 +104,69 @@ A second Tier 2 run used 200 practice and 100 FFA matches, with 15 pre-survey bo
 - final_r: exactly 0.
 - All Tier 2: +0.06 / −0.59 ± 0.38.
 
+## Second survey, all ~160 repos (2026-11-22)
+Board: we are 4.73; top is Hermes-25 6.58. Scores below are each team's own claims.
+
+**What the 6+ bots share.** giddy's Go core (6.06–6.19), andrew-zhouu/azing (6.23–6.29), automata (6.29, Rust) and Hermes' Afterglow (V201 branch `practice-loadout-v4`, 686 lines of Python). All of them: laser first, plating-first upgrades, fight everything in line of sight, never hide, short retreats only. Hermes adds a 3-step pickup itinerary planner (cubes, drops, lasers, with contest and upgrade-threshold value), shoots every visible mech in range, and picks the laser target by fewest shots to kill.
+
+**Noise.** Arnav redrew giddy's 6.17 build with 15 RNG salts: mean about 5.65, sd 0.25. Lance saw 5.42 and 5.15 for the same commit. Read any single board delta under about 0.3 as noise. Teams draw extra samples by changing an RNG salt; we now have a `salt` knob for that.
+
+**Real-board results worth acting on.**
+- doni9977 on giddy's engine: no fight/threat boost, `LethalK` 0.7, target `HPw` 0.18 took 5.83 → 6.06 → 6.19. Arnav's giddy2 → giddy3 (same three changes) 5.25 → 6.17 on one draw.
+- ParishruthiGanesh: mid-fight fetch of a better weapon within 110 m +0.44; 200 m −0.21. Fight range peak at 110 m (35 m 4.67, 80 m 4.65, 110 m 4.90, 150 m 4.50).
+- Practice score is mostly kills in the first 3 minutes: idling from 180 s still scored 5.02 against 5.25 (ParishruthiGanesh).
+- nullat0m7: survival play from the first tick 1.75 against 4.46. Every hide, heal or cover variant in this survey lost on the board.
+- Contradiction: jackbalseca measured never-mortar and farming at −0.36 each when ported alone onto a Python bot.
+
+**Measured house facts.** House gun hit rate (andrew-zhouu, 1,457 shots): 85% <40 m, 52% at 40–80, 26% at 80–120, 15% at 120–180. Epic (5,193 real bullets): long 0.6–1.4 s jink legs while boosting cut hits at 78–150 m from 54% to 26%; legs under 0.6 s barely help because reversing takes 0.4 s. Lightning is 240 dps inside 45 m and cannot miss.
+
+**New knobs (`bot/params.py`, end of `defaults()`), sim A/B, house v2, 150 paired seeds 9000–9149, base 5.52:**
+| Knob | Δ | Note |
+|---|---|---|
+| `arc_avoid` 1 (evade_v2 keeps out of lightning reach) | **+0.11 ± 0.07** | lightning deaths 18 → 10. **On in genome.json.** |
+| `free_fire` 1 (laser only: shoot any visible mech when no target) | +0.01 ± 0.16 | fires on 0.9% of ticks in the sim; the sim's passive house rarely shows up in range |
+| `hunt_hpw` 0.18 + `lethal_k` 0.7 + `grounded` 2 (doni's package) | +0.07 ± 0.20 | |
+| above + `fight_loot_dist` 110 | +0.02 ± 0.20 | |
+| above + `free_fire` + `fight_drop` | +0.11 ± 0.22 | salt 1 redraw: +0.09 |
+| above + `arc_avoid` | +0.05 ± 0.21 | |
+
+Knobs at their defaults reproduce the previous bot exactly (12 of 12 seeds identical). Only `arc_avoid` is clearly above sim noise. The doni package has the strongest real-board evidence of anything we found, so it is the first board A/B to run. Both pass the kit's recorded stream with 0 errors (p99 20 ms on a busy machine).
+
+### Combined bot (2026-11-22, 12:30)
+Five more knobs carry ideas from the 6+ bots: `laser_pulses` (Hermes: target the mech the fewest full beams finish), `explore` (Hermes: before 125 s without a laser, walk toward unswept 28 m cells and sweep the view), `cube_cluster` (Hermes: value piles and upgrade thresholds), `crowd_avoid` (Hermes: idle on the calmest of 10 ring points), `jink_hold` 0.6 (Epic: 0.6–1.4 s dodge legs).
+
+Paired house-v2 practice; reference = previous bot with `arc_avoid` on. Seeds 9000–9149 and 9150–9299, pooled n = 300:
+| Variant | 9000 set | 9150 set | Pooled |
+|---|---|---|---|
+| `laser_pulses` alone | +0.11 | +0.17 | +0.14 ± 0.09 |
+| the five new knobs | +0.03 | +0.07 | +0.05 ± 0.17 |
+| board package (doni's three edits, `fight_loot_dist` 110, `free_fire`, `fight_drop`, `laser_pulses`) | +0.13 | +0.20 | +0.16 ± 0.15 |
+| **everything (board package + the five)** | **+0.32** | **+0.39** | **+0.36 ± 0.17** |
+
+Alone, `explore`, `cube_cluster`, `crowd_avoid` and `jink_hold` each scored −0.15 to −0.27 on the first set, all within about 1.5 se. They only pay inside the full package. **`bot/genome.json` now holds the full package.** Against the bot at the start of the day (5.52 on seeds 9000–9149) it scores 5.95.
+
+Free-for-all, 15 competitor images, 24 seeds (5100–5123): 7.38 → 7.42 (se 0.9), alive 101 → 114 s, kills 0.92 → 1.12. No loss. Kit stream: 0 errors, p99 3.4 ms on an idle machine. Unit tests pass.
+
+If the board score drops, switch off the five Hermes/Epic knobs first (back to the board package), then the board package (back to `arc_avoid` only).
+
+### Sim calibration, pruning and tuning (2026-11-22, 14:30)
+**House aim calibrated.** `sim/house_aim.py` measures house gun hits on us by range. House v2 hit 69/46/33/24/9% at <40/40-80/80-120/120-180/180+ m; real measurements say about 88/55/30/15/3%. Aim noise that grows with range (`--house v2c`: tier noise × 0.6 × (range/80)^0.5) gives 95/57/30/16/2%.
+
+**Board agreement** (`sim/rank_check.py`, 9 competitor images and 3 of our commits with known board scores, 32 seeds): rank correlation 0.66 for v2, **0.74 for v2c**. Tried and dropped, each worse: house bots that wake when shot or approached (0.64–0.69); an independent scripted house (0.59, far too easy). Every model still rates our bot about 0.8–1.3 above its board score and giddy, kanya and mike 0.6–1.8 below. The most likely cause is that the sim's house bots run our own brain code, so our bot is partly tuned against itself. Treat sim gains for our bot as optimistic.
+
+**Knockouts of the combined bot** (v2c, seeds 9000–9149; positive = removing it helps): `grounded`→1 +0.43, farming off +0.19, `crowd_avoid` +0.18, `fight_drop` +0.17, `laser_pulses` +0.15, `free_fire` +0.15, `cube_cluster` +0.14, `jink_hold` off −0.38, `explore` off −0.21, the rest within ±0.06.
+
+**Fresh-seed check** (9150–9299), against the deployed 4.73 bot:
+| Bot | v2c | v2 |
+|---|---|---|
+| combined | +0.19 | +0.39 |
+| pruned, `grounded` 1 | +0.18 | −0.10 |
+| **pruned, `grounded` 2** | **+0.25** | **+0.19** |
+
+The `grounded` knockout gain did not replicate, so `grounded` stays 2. **`bot/` now runs the pruned bot with `grounded` 2:** `arc_avoid`, `explore`, `jink_hold` 0.6, `hunt_hpw` 0.18, `lethal_k` 0.7, `fight_loot_dist` 110, farming off (`npc_dist` 0, `crate_dist` 40). `laser_pulses` stays in the code but off (it helped on v2 and hurt on v2c). The code for `free_fire`, `fight_drop`, `cube_cluster` and `crowd_avoid` is deleted: each lost in both houses. `bot/` reproduces the tested variant on 10 of 10 seeds.
+
+**Tuning** (v2c, seeds 9300–9449, against the pruned bot at 5.13): `jink_hold` 0.4 −0.12, 0.9 +0.03; `laser_dist` 100 −0.08, 140 −0.06; `pref_dist` 70 −0.05, 100 −0.05. All flat. The values stay, and they agree with the board evidence (laser about 110–120 m, gun about 85 m).
+
 ## Arnav "v5" package (2026-11-21, late)
 Our board score with Tier 1 on is 3.50; the top-32 bar is above 5.3. Practice score is close to a kill count, because house bots never attack each other. Three teams' real-board logs agree on one recipe:
 - **Arnav** (`dev/OVERNIGHT.md`): never retreat + hold 110 m + target lowest hp×(1+d/120) in line of sight + mid-fight looting moved 3.81 → 5.13 as one package. Single knobs added on top (looser gun gate, slower strafe, selective engagement, sticky targets, economy) all scored lower.

@@ -123,6 +123,14 @@ def defaults():
     params["idle_still"] = 0.0  # >= 0.5: with nothing to do inside the next circle, stand still instead of walking to its centre
     params["ffa_profile"] = 0.0  # >= 0.5: after the ffa latch, engage, retreat and heal like the top ffa bots
     params["ffa_hit_s"] = 0.0  # with ffa_profile: also latch the free-for-all profile on a hit before this many seconds
+    params["salt"] = 0.0  # added to the bot's RNG seed
+    params["arc_avoid"] = 0.0  # >= 0.5: evade_v2 keeps us out of lightning reach of every visible carrier
+    # Ideas from the 6+ board bots (docs/competitor-survey.md, second survey)
+    params["laser_pulses"] = 0.0  # >= 0.5: with a laser, hunt_v2 targets the mech the fewest full beams finish
+    params["explore"] = 0.0  # >= 0.5: before 125 s without a laser, walk toward unswept ground and sweep the view
+    params["jink_hold"] = 0.0  # > 0: evade_v2 holds each leg jink_hold..2.33*jink_hold s (0 = old 0.3-0.6 s)
+    params["hunt_hpw"] = 0.1  # hunt_v2 target score = metres + hunt_hpw * hp (a 6.19 board bot uses 0.18)
+    params["lethal_k"] = 0.8  # laser_lethal: release a partial charge when lethal_k * its damage >= target hp (6.19 bot: 0.7)
     return params
 
 
