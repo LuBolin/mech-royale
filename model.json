@@ -1,12 +1,12 @@
 {
   "run": "ppo-solo-a95c7c34",
   "stage": "self-play",
-  "step": 4041,
+  "step": 6735,
   "size": "large",
   "parameters": 5184350,
   "teacher": "ours",
-  "revision": "c8edd96aeb8633cd2c61c17d7afb319ab28e50c8",
-  "sha256": "74658eab0a0e02695cf9d93a2780a1de8de306eb1826e7993de5edeaaff54f97",
+  "revision": "58c9d4a32d31bf6a2d31c919f87c51588a5f2b0c",
+  "sha256": "ed5670f047f23a82c764ec54c4198b3b057c7fed096160665294e31059a4ba25",
   "files": {
     "Dockerfile": "e77b9796d1183965ea830e2d4e60c9fc61589d3732cbb013d36aea071ce1b1d1",
     "bot/arena_routes.npz": "1a7d18bb0aeee6575e926c541c13d78556c45ef6e539af92e79061765ca763ee",
@@ -21,27 +21,27 @@
     "bot/netbot.py": "ba180c6d5aaa6eb77450d6920e6ff5d781d04dcd735b22363bff8e1f3d927de4",
     "bot/params.py": "a82953a77978a66a9106dcce28ed1c5c8b18a9726ee3dcb219f72a1c830420f1",
     "bot/policy.json": "542ce8b0b803233e849f7b5463b87e24e38ea50c2423ef67d7e15abb75201569",
-    "bot/policy.npz": "74658eab0a0e02695cf9d93a2780a1de8de306eb1826e7993de5edeaaff54f97",
+    "bot/policy.npz": "ed5670f047f23a82c764ec54c4198b3b057c7fed096160665294e31059a4ba25",
     "bot/positioning.py": "b6072c158b6cb66edebc216f94284f44339f525b83436b6bac2e721e982be8e7",
     "bot/rotation.py": "a11c790edb8e585bbb5e0069612a6cd8b2699a2c406d7a4691d9c8d255f7f304",
     "bot/tracking.py": "61a77c6a2b27099fd3d4a45bd196a72f9c0979b432b62028fd583cf26ba32d0f",
     "bot/world.py": "ee4542cea5aff6cb751cfe66994a5abd29d8a86cd46c98bfca441e2ad1488b54"
   },
-  "utc": "2026-11-22T09:06:47.033984+00:00",
+  "utc": "2026-11-22T13:42:49.007560+00:00",
   "validation": {
     "matches": 64,
-    "decisions": 61279,
-    "objective": 0.002262497819233953,
-    "rollout_points": 7.921875,
-    "seed_base": 2001439,
-    "parent": "W:\\Builders Hackathon\\Mech Royale\\runs\\league-policy\\runs\\nn\\checkpoints\\ppo-solo-a95c7c34\\00003858",
-    "parent_sha256": "3295874a6c8afdeb6616671e154536e090d36531b1b8c480606b292373b330b8",
+    "decisions": 50125,
+    "objective": 0.002607156030135229,
+    "rollout_points": 7.140625,
+    "seed_base": 2002463,
+    "parent": "W:\\Builders Hackathon\\Mech Royale\\runs\\league-policy\\runs\\nn\\checkpoints\\ppo-solo-a95c7c34\\00006585",
+    "parent_sha256": "437b390b4b87833711f2c637598066f630e800ca7d21023df900bf6d35c266ea",
     "source_sha256": "a95c7c34c2cecc77cc8dd407e67826079caca018fb26d084b60b1d696b1284d2",
-    "rollout_s": 152.04024469992146,
-    "ppo_s": 5.3943294999189675,
+    "rollout_s": 88.99673840007745,
+    "ppo_s": 4.192278300062753,
     "workers": 31,
-    "updates": 183,
-    "optimizer_step_before": 3858
+    "updates": 150,
+    "optimizer_step_before": 6585
   },
-  "parity_max_error": 0.0015826225280761719
+  "parity_max_error": 0.001880645751953125
 }
