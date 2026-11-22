@@ -109,7 +109,21 @@ GENOME_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "genome.j
 
 
 def defaults():
-    return {s[0]: float(s[3]) for s in SPEC}
+    # Encounter tactics switch several policies together. Keep this opt-in profile
+    # out of the continuous genome so saved populations keep their original shape.
+    params = {s[0]: float(s[3]) for s in SPEC}
+    params["encounter_tactics"] = 0.0
+    params["econ_v2"] = 0.0
+    params["loot_v3"] = 0.0  # drones are not mech threats: shoot the ones that hit us; collect kill cubes
+    params["hunt_v2"] = 0.0  # engage, target, finish and boost rules ported from a top practice bot
+    params["lose_rule"] = 0.0  # berserk only: brief boosted retreat to cover while badly outnumbered or outlasted
+    params["evade_v2"] = 0.0  # >= 0.5: pick moves under fire by simulating candidate directions (Bot.evade_move)
+    params["quiet_open"] = 0.0  # seconds of opening: loot within 60 m, no boost or gunfire at objects, fight only <60 m or attackers
+    params["grounded"] = 0.0  # >= 0.5: no dodge hops and no stuck hops while fighting; >= 1.5: also no fight/threat boost
+    params["idle_still"] = 0.0  # >= 0.5: with nothing to do inside the next circle, stand still instead of walking to its centre
+    params["ffa_profile"] = 0.0  # >= 0.5: after the ffa latch, engage, retreat and heal like the top ffa bots
+    params["ffa_hit_s"] = 0.0  # with ffa_profile: also latch the free-for-all profile on a hit before this many seconds
+    return params
 
 
 def decode(x):

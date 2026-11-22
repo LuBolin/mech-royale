@@ -39,6 +39,8 @@ class HouseBot(Bot):
             return super().act(obs)  # Independent expert filler in a tournament FFA.
         hunting = obs["self"]["id"] in self.shared["hunters"]
         p = self.p
+        if self.shared.get("v2"):
+            return self._act_v2(obs, hunting)
         p["engage_range"] = 230 if hunting else 110
         p["aggr"] = 50.0 if hunting else 1.2
         p["flee_hp"] = 0.0 if hunting else 0.2
@@ -46,18 +48,48 @@ class HouseBot(Bot):
         self.goal_hint = (last[1][0], last[1][1]) if hunting and last and obs["t"] - last[0] < 30 else None
         return super().act(obs)
 
+    def _act_v2(self, obs, hunting):
+        """House v2 (practice_match(..., house="v2")): evidence from other teams' notes, sources inline."""
+        sh, p, t = self.shared, self.p, obs["t"]
+        # First hunter at ~20 s, not at t=0 (nullat0m7 sim/house.ts joinStart; track page: "one early").
+        hunting = hunting and t >= V2_FIRST_HUNT_T
+        # Non-hunters never start or return fights (pedduvedcharan NOTES.md cal-A, joekritenbrink README: passive
+        # non-hunters put the kit starter at 0.8-1.1 vs real 1.15; itsyashk crates/sim/README: retaliation gives
+        # 0.34-0.54). Here, retaliating for 6 s (jack tools/house.py) put the starter at 0.22 and all bots at ~0.4x.
+        pl = sh["player"]
+        p["engage_range"] = 230 if hunting else 0
+        p["aggr"] = 50.0 if hunting else 1.2
+        p["flee_hp"] = 0.0 if hunting else 0.2
+        # Hunters learn the player's true position (+-20 m) every 8 s when nobody sees it (nullat0m7 house.ts
+        # intelEvery; jack LEARNINGS: hiding to heal fails because "the hunters always know where we are";
+        # Infamustdev hide probe scored 0.04 for real). One update per squad, not per bot.
+        M, last = sh["match"], sh["last"]
+        me = M.mechs[pl]
+        if hunting and me.alive and t - max(sh["intel_t"], last[0] if last else -1e9) >= V2_INTEL_S:
+            sh["intel_t"] = t
+            r = self.rng
+            sh["last"] = last = (t, (me.x + r.uniform(-20, 20), me.y + r.uniform(-20, 20), me.z))
+        self.goal_hint = (last[1][0], last[1][1]) if hunting and last and t - last[0] < 30 else None
+        return Bot.act(self, obs)
 
-def practice_match(cfg, seed, params):
-    """Unrun practice match: params vs 15 cooperating house bots. Returns (match, our slot, seat labels)."""
+
+V2_FIRST_HUNT_T, V2_INTEL_S = 20.0, 8.0
+
+
+def practice_match(cfg, seed, params, player=None, house="v1"):
+    """Unrun practice match: params (or player(hello), if given) vs 15 cooperating house bots.
+    house="v2" selects the evidence-based squad (HouseBot._act_v2). Returns (match, our slot, seat labels)."""
     rng = random.Random(seed)
     slot = rng.randrange(16)
     levels = LEVELS[:]
     rng.shuffle(levels)
     shared = {"player": slot, "last": None, "hunters": set(), "all_hunt_t": ALL_HUNT_T}
+    if house == "v2":
+        shared.update(v2=True, intel_t=-1e9)
     facs, teams, lv, labels = [], [], {}, []
     for i in range(16):
         if i == slot:
-            facs.append(lambda h: Bot(h, params))
+            facs.append(player or (lambda h: Bot(h, params)))
             teams.append(None)
             labels.append("ours")
         else:
@@ -66,7 +98,19 @@ def practice_match(cfg, seed, params):
             facs.append(lambda h, L=L: HouseBot(h, L, shared))
             teams.append(1)
             labels.append(L)
-    return Match(cfg, seed, facs, teams, track=slot, shared=shared, levels=lv), slot, labels
+    M = Match(cfg, seed, facs, teams, track=slot, shared=shared, levels=lv)
+    if house == "v2":
+        shared["match"] = M  # hunter intel reads the player's true position
+        damage = M._damage
+
+        def _damage(tgt, amt, att, *a, **k):
+            # Drones never hurt the squad: a real never-shoot hide probe scored 0.04, so house bots only die to
+            # the player (Infamustdev sim/ASSUMPTIONS.md, experiments.md P1).
+            if getattr(tgt, "team", None) is not None and getattr(att, "kind", None) == "npc":
+                return None
+            return damage(tgt, amt, att, *a, **k)
+        M._damage = _damage
+    return M, slot, labels
 
 
 def practice(cfg, seed, params):

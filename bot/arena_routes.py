@@ -54,8 +54,9 @@ class Routes:
         return self.world.x0 + STEP * col, self.world.y0 + STEP * row
 
     def plan(self, pos, goal, purpose, threats, circle, stats, energy=0, allow_air=True,
-             travel_budget=math.inf):
-        direct = self._search(pos, goal, purpose, threats, circle, stats, energy, allow_air)
+             travel_budget=math.inf, *, tactical_flank=False):
+        direct = self._search(pos, goal, purpose, threats, circle, stats, energy, allow_air,
+                              tactical_flank=tactical_flank)
         if purpose != "travel" or not threats or len(direct) < 2:
             return direct
         # Both alternatives must make comparable progress, even when the first A*
@@ -123,11 +124,13 @@ class Routes:
         upper = node+self.layer_size
         return min((node, upper), key=lambda n: abs(self.heights[n]-pos[2]))
 
-    def _search(self, pos, goal, purpose, threats, circle, stats, energy, allow_air, penalty=None):
+    def _search(self, pos, goal, purpose, threats, circle, stats, energy, allow_air, penalty=None,
+                *, tactical_flank=False):
         """Bounded A* for travel, or a local walking-distance search for shelter and firing angles."""
         x, y, z = pos
         w = self.world
         opportunity = purpose == "opportunity"
+        ordinary_flank = purpose == "flank" and not tactical_flank
         if opportunity:
             if len(threats) < 2:
                 return []
@@ -217,7 +220,10 @@ class Routes:
                     angle = math.atan2(py-ty, px-tx) - math.atan2(y-ty, x-tx)
                     lateral = abs(math.sin(angle)) * math.hypot(x-tx, y-ty)
                     if lateral > 8 and math.hypot(px-tx, py-ty) >= min(18, math.hypot(x-tx, y-ty)):
-                        spots.append((cost - min(lateral, 35) * 0.8 - min(mask.bit_count(), 3), state))
+                        score = cost - min(lateral, 35) * 0.8 - min(mask.bit_count(), 3)
+                        if ordinary_flank:
+                            score -= max(-4, min(6, self.heights[n]-z))
+                        spots.append((score, state))
 
             neighbors = []
             for bit, (offset, length) in enumerate(self.edges):
@@ -283,6 +289,9 @@ class Routes:
                     continue
                 if not w.los(px, py, height, *threats[0], 1.5):
                     continue
+                if ordinary_flank:
+                    best = state
+                    break
                 chest = self.heights[n] + stats["height"]*0.65
                 incoming = [w.los(px, py, chest, *eye, 1.5) for eye in enemy_muzzles]
                 if opportunity and any(incoming[1:]):

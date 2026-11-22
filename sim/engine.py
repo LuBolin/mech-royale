@@ -287,18 +287,12 @@ class Match:
                   "progress": d.progress, "holder": d.holder} for d in self.drops]
         actions = []
         for m in alive:
-            for aid in vis[m.id]:
-                m.mem[aid] = t
-            if m.team is not None:
-                for aid in team_seen[m.team]:
-                    m.mem[aid] = t
-            if m.zone_acc > 0:
-                m.events.append({"type": "damaged", "amount": round(m.zone_acc, 1), "weapon": "zone",
-                                 "bearing": None, "by": None})
-                m.zone_acc = 0.0
-            obs = self._obs(m, actors, zone, drops)
+            if hasattr(m.bot, "send"):  # external bots get every obs first and think in parallel
+                m.bot.send(self._observe(m, vis, team_seen, actors, zone, drops))
+        for m in alive:
             try:
-                act = m.bot.act(obs)
+                act = m.bot.recv() if hasattr(m.bot, "send") else \
+                    m.bot.act(self._observe(m, vis, team_seen, actors, zone, drops))
             except Exception:
                 self.errors += 1
                 if self.errors <= 3:
@@ -312,7 +306,6 @@ class Match:
             else:
                 act = {"aim": [m.yaw, m.pitch]}
             actions.append((m, act))
-            m.events = []
         # All observers see the same pre-action world. Resolve contested takes by distance.
         pickups = {p.id: p for p in self.pickups}
         takes = []
@@ -327,6 +320,20 @@ class Match:
         for _, _, m, pid, slot in sorted(takes):
             self._take(m, pid, slot)
         self.sounds, self.beams = [], []
+
+    def _observe(self, m, vis, team_seen, actors, zone, drops):
+        for aid in vis[m.id]:
+            m.mem[aid] = self.t
+        if m.team is not None:
+            for aid in team_seen[m.team]:
+                m.mem[aid] = self.t
+        if m.zone_acc > 0:
+            m.events.append({"type": "damaged", "amount": round(m.zone_acc, 1), "weapon": "zone",
+                             "bearing": None, "by": None})
+            m.zone_acc = 0.0
+        obs = self._obs(m, actors, zone, drops)
+        m.events = []  # obs keeps the old list
+        return obs
 
     def _update_shared(self, alive, team_seen):
         sh = self.shared
